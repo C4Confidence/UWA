@@ -121,4 +121,4 @@ module.exports = {
     getAllProduct, 
     updateProduct, 
     deleteProduct,
- }
+ };
