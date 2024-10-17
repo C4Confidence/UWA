@@ -1,7 +1,7 @@
 // import { Page } from "@/components/app-page"
 
-import AboutPage from "@/components/about";
+import Home from "@/components/app-page";
 
 export default function page() {
-  return <AboutPage />
+  return <Home />
 }

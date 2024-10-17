@@ -2,10 +2,10 @@
 
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
+import Image from 'next/image'
 import { ShoppingBag, User, ChevronLeft, ChevronRight } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-// import { Input } from '@/components/ui/input'
 import {
   Card,
   CardContent,
@@ -16,16 +16,61 @@ import {
 } from '@/components/ui/card'
 
 const images = [
-  '/placeholder.svg?height=400&width=800&text=Image+1',
-  '/placeholder.svg?height=400&width=800&text=Image+2',
-  '/placeholder.svg?height=400&width=800&text=Image+3',
-  '/placeholder.svg?height=400&width=800&text=Image+4',
-  '/placeholder.svg?height=400&width=800&text=Image+5',
-  '/placeholder.svg?height=400&width=800&text=Image+6',
+  '/Shoes.png',
+  '/Phone.png',
+  '/Cream.png',
+  '/Projector.png',
+]
+
+const products = [
+  {
+    id: 1,
+    name: "Elegant Watch",
+    description: "A stylish timepiece for any occasion",
+    price: 199.99,
+    image: "https://uxwxqfnzxhqjjxjnpjxk.supabase.co/storage/v1/object/public/images/watch.jpg"
+  },
+  {
+    id: 2,
+    name: "Leather Bag",
+    description: "Durable and fashionable leather bag",
+    price: 149.99,
+    image: "https://uxwxqfnzxhqjjxjnpjxk.supabase.co/storage/v1/object/public/images/bag.jpg"
+  },
+  {
+    id: 3,
+    name: "Sunglasses",
+    description: "Protect your eyes in style",
+    price: 89.99,
+    image: "https://uxwxqfnzxhqjjxjnpjxk.supabase.co/storage/v1/object/public/images/sunglasses.jpg"
+  },
+  {
+    id: 4,
+    name: "Sneakers",
+    description: "Comfortable and trendy footwear",
+    price: 129.99,
+    image: "https://uxwxqfnzxhqjjxjnpjxk.supabase.co/storage/v1/object/public/images/sneakers.jpg"
+  },
+  {
+    id: 5,
+    name: "Wireless Earbuds",
+    description: "High-quality sound on the go",
+    price: 159.99,
+    image: "https://uxwxqfnzxhqjjxjnpjxk.supabase.co/storage/v1/object/public/images/earbuds.jpg"
+  },
+  {
+    id: 6,
+    name: "Smart Water Bottle",
+    description: "Stay hydrated with smart reminders",
+    price: 39.99,
+    image: "https://uxwxqfnzxhqjjxjnpjxk.supabase.co/storage/v1/object/public/images/water-bottle.jpg"
+  }
 ]
 
 export default function Home() {
   const [currentImage, setCurrentImage] = useState(0)
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -33,6 +78,19 @@ export default function Home() {
     }, 3000)
 
     return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
   }, [])
 
   const goToImage = (index: number) => {
@@ -47,9 +105,13 @@ export default function Home() {
     setCurrentImage((prevImage) => (prevImage + 1) % images.length)
   }
 
+  const toggleDropdown = () => {
+    setIsDropdownOpen(!isDropdownOpen)
+  }
+
   return (
     <div className="flex flex-col min-h-screen">
-      <header className="sticky top-0 z-10 bg-yellow-300 border-b">
+      <header className="sticky top-0 z-10 bg-yellow-400 border-b">
         <div className="container mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
           <Link href="/" className="text-2xl font-bold text-primary">
             Uwa
@@ -78,7 +140,7 @@ export default function Home() {
               <input
                 type="search"
                 placeholder="Search"
-                className="w-full sm:w-[200px] md:w-[300px]"
+                className="w-full sm:w-[200px] md:w-[300px] px-3 py-2 border border-gray-300 rounded-md"
               />
               <Button type="submit" className="transition-all duration-300 ease-in-out hover:scale-110 hover:bg-green-500 hover:text-white">
                 Search
@@ -89,24 +151,34 @@ export default function Home() {
               <span className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs">3</span>
               <span className="sr-only">Cart</span>
             </Button>
-            <div className="relative group">
-              <Button variant="ghost" className="p-0">
-                <User className="h-5 w-5 mr-2" />
+            <div className="relative" ref={dropdownRef}>
+              <Button
+                variant="ghost"
+                className="flex items-center space-x-2"
+                onClick={toggleDropdown}
+                aria-haspopup="true"
+                aria-expanded={isDropdownOpen}
+              >
+                <User className="h-5 w-5" />
                 <span className="text-sm font-medium">Welcome</span>
               </Button>
-              <div className="absolute right-0 mt-2 w-48 bg-background shadow-lg rounded-md overflow-hidden z-10 invisible group-hover:visible">
-                <div className="p-4">
-                  <Button className="w-full mb-2 transition-all duration-300 ease-in-out hover:scale-105 hover:bg-green-500 hover:text-white">
-                    Sign In
-                  </Button>
-                  <p className="text-sm text-center">
-                    New Customer?{' '}
-                    <Link href="/signup" className="text-primary hover:underline">
-                      Sign up
-                    </Link>
-                  </p>
+              {isDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 z-10">
+                  <div className="px-4 py-2">
+                    <Button className="w-full transition-all duration-300 ease-in-out hover:scale-110 hover:bg-green-500 hover:text-white">
+                      <Link href="/signin"> 
+                      Sign In
+                      </Link>
+                    </Button>
+                    <p className="mt-2 text-sm text-center">
+                      New Customer?{' '}
+                      <Link href="/signup" className="text-blue-500 hover:underline">
+                        Sign up
+                      </Link>
+                    </p>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
@@ -221,7 +293,7 @@ export default function Home() {
             <div className="flex space-x-2">
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-credit-card"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-paypal"><path d="M17.998 8.064c-.127-.474-.372-.918-.726-1.344-.52-.626-1.21-1.037-2.12-1.262-.83-.193-1.885-.305-3.106-.305H7.654L5 18.684h3.303l.656-3.752h2.484c1.185 0 2.092-.076 2.702-.228.832-.206 1.504-.58 2.038-1.124.456-.466.815-1.02 1.074-1.656.26-.637.435-1.48.435-2.024 0-.704-.114-1.306-.4-1.836z"/><path d="M9.95 7.4c1.263 0 2.116.123 2.62.357.52.243.78.687.78 1.346 0 .404-.078.743-.24 1.017a1.83 1.83 0 0 1-.57.63c-.3.21-.67.358-1.11.45-.38.074-1.07.11-2.04.11h-1.75l.47-3.91h1.84z"/></svg>
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-bitcoin"><path d="M11.767 19.089c4.924.868 6.14-6.025 1.216-6.894m-1.216 6.894L5.86 18.047m5.908 1.042-.347 1.97m1.563-8.864c4.924.869 6.14-6.025 1.215-6.893m-1.215 6.893-3.94-.694m3.94.694-.346 1.97"/><path d="M7.116 7.736c3.94.694 4.017-6.242 0-5.547-4.017-.695-3.94 6.241 0 5.547z"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-bitcoin"><path d="M11.767  19.089c4.924.868 6.14-6.025 1.216-6.894m-1.216 6.894L5.86 18.047m5.908 1.042-.347 1.97m1.563-8.864c4.924.869 6.14-6.025 1.215-6.893m-1.215 6.893-3.94-.694m3.94.694-.346 1.97"/><path d="M7.116 7.736c3.94.694 4.017-6.242 0-5.547-4.017-.695-3.94 6.241 0 5.547z"/></svg>
             </div>
           </div>
           <div className="mt-4 text-center text-sm text-muted-foreground">
