@@ -6,3 +6,7 @@ node_modules/
 out/
 .vercel/
 *.log
+*.tsbuildinfo
+playwright-report/
+test-results/
+coverage/
