@@ -21,22 +21,29 @@ export function isProduct(value: unknown): value is Product {
   );
 }
 
-/** Adapt API identifiers without weakening the canonical frontend Product shape. */
+function metadataLabel(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+/** Adapt identifiers and optional display metadata, then validate commercial data. */
 export function normalizeProduct(value: unknown): Product | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const product = value as Record<string, unknown>;
   // Existing _id values stay authoritative; id is the backend's JSON alias.
-  const normalized = { ...product, _id: product._id ?? product.id };
+  const normalized = {
+    ...product,
+    _id: product._id ?? product.id,
+    category: metadataLabel(product.category, "Uncategorized"),
+    brand: metadataLabel(product.brand, "Unknown brand"),
+  };
   return isProduct(normalized) ? normalized : null;
 }
 
-function normalizeProducts(value: unknown): Product[] | null {
-  if (!Array.isArray(value)) return null;
+function normalizeProducts(value: unknown[]): Product[] {
   const products: Product[] = [];
   for (const entry of value) {
     const product = normalizeProduct(entry);
-    if (!product) return null;
-    products.push(product);
+    if (product) products.push(product);
   }
   return products;
 }
@@ -65,30 +72,34 @@ async function request(url: string, signal?: AbortSignal): Promise<Response> {
 export async function getCatalog(signal?: AbortSignal): Promise<Product[]> {
   const products: Product[] = [];
   const seen = new Set<string>();
+  let receivedRecords = false;
+  const finish = () => {
+    if (receivedRecords && !products.length)
+      throw new Error(
+        "Some product information is unavailable. Please try again later.",
+      );
+    return products;
+  };
   for (let page = 1; page <= 100; page++) {
     const query = new URLSearchParams({ limit: "100", sort: "_id" });
     if (page > 1) query.set("page", String(page));
     const response = await request(`/api/product?${query}`, signal);
     // The original API returns 404 for an out-of-range page.
-    if (response.status === 404 && page > 1) return products;
+    if (response.status === 404 && page > 1) return finish();
     if (!response.ok)
       throw new Error("We couldn’t load the collection. Please try again.");
     const data = await response.json();
     const entries: unknown = data?.data?.products;
     if (!Array.isArray(entries))
       throw new Error("The collection is temporarily unavailable.");
-    const normalized = normalizeProducts(entries);
-    if (!normalized)
-      throw new Error(
-        "Some product information is unavailable. Please try again later.",
-      );
-    for (const product of normalized) {
+    receivedRecords ||= entries.length > 0;
+    for (const product of normalizeProducts(entries)) {
       if (!seen.has(product._id)) {
         seen.add(product._id);
         products.push(product);
       }
     }
-    if (entries.length < 100) return products;
+    if (entries.length < 100) return finish();
   }
   throw new Error(
     "The collection is too large to load right now. Please try again later.",
@@ -100,8 +111,12 @@ export async function getFeatured(signal?: AbortSignal): Promise<Product[]> {
   if (!response.ok)
     throw new Error("We couldn’t load the collection. Please try again.");
   const data = await response.json();
-  const products = normalizeProducts(data?.data?.products);
-  if (!products) throw new Error("The collection is temporarily unavailable.");
+  const entries: unknown = data?.data?.products;
+  if (!Array.isArray(entries))
+    throw new Error("The collection is temporarily unavailable.");
+  const products = normalizeProducts(entries);
+  if (entries.length > 0 && !products.length)
+    throw new Error("The collection is temporarily unavailable.");
   return products;
 }
 

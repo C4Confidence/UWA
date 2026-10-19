@@ -117,6 +117,91 @@ test('mixed id and _id collection records keep separate product identities in th
   await expect(page.getByLabel('Quantity: 1', { exact: true })).toHaveCount(2);
 });
 
+test('all ten safe products remain shoppable when two lack usable category and brand metadata', async ({ page }) => {
+  const complete = Array.from({ length: 8 }, (_, index) => ({
+    ...idProduct,
+    id: (0x201 + index).toString(16).padStart(24, '0'),
+    title: `Metadata Test Product ${index + 1}`,
+    price: 21 + index,
+  }));
+  const missing = {
+    ...idProduct, id: '000000000000000000000209', title: 'Metadata Test Product 9',
+    price: 39, quantity: 2, category: undefined, brand: undefined,
+  };
+  const malformed = {
+    ...idProduct, id: '000000000000000000000210', title: 'Metadata Test Product 10',
+    price: 49, quantity: 5, category: null, brand: { invalid: true },
+  };
+  await interceptProducts(page, [...complete, missing, malformed], () => missing);
+  await page.goto('/products');
+  const titles = page.getByRole('heading', { level: 3, name: /^Metadata Test Product \d+$/ });
+  await expect(titles).toHaveCount(10);
+  await expect(page.getByRole('heading', { name: 'Let’s try that again.' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Audio', exact: true }).click();
+  await expect(titles).toHaveCount(8);
+  await page.getByRole('button', { name: 'Uncategorized', exact: true }).click();
+  await expect(titles).toHaveCount(2);
+  await expect(page.getByText('Unknown brand', { exact: true })).toHaveCount(2);
+  await expect(page.getByText('$39.00', { exact: true })).toBeVisible();
+  await expect(page.getByText('$49.00', { exact: true })).toBeVisible();
+
+  await page.getByRole('link', { name: `View ${missing.title}`, exact: true }).click();
+  await expect(page.getByRole('heading', { name: missing.title, exact: true })).toBeVisible();
+  await expect(page.getByText('Unknown brand', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Uncategorized', { exact: true })).toBeVisible();
+  await expect(page.getByText('$39.00', { exact: true })).toBeVisible();
+  const image = page.getByRole('img', { name: missing.title, exact: true });
+  await expect(image).toBeVisible();
+  await expect.poll(() => image.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Increase quantity', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Increase quantity', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Add to bag', exact: true }).click();
+  await page.getByRole('link', { name: 'Shopping Bag, 2 items', exact: true }).click();
+  await expect(page.getByRole('heading', { name: missing.title, exact: true })).toBeVisible();
+  await expect(page.getByLabel('Quantity: 2', { exact: true })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Bag summary' }).getByText('$78.00', { exact: true })).toHaveCount(2);
+  await page.reload();
+  await expect(page.getByLabel('Quantity: 2', { exact: true })).toBeVisible();
+});
+
+test('unsafe records do not hide safe products in the featured collection or catalog', async ({ page }) => {
+  const entries = [
+    { ...idProduct, id: 'unsafe-identifier', title: 'Unsafe Identifier Test Product' },
+    idProduct,
+    { ...idProduct, id: '000000000000000000000301', title: 'Unsafe Price Test Product', price: -1 },
+    { ...idProduct, id: '000000000000000000000302', title: 'Unsafe Stock Test Product', quantity: -1 },
+    { ...idProduct, id: '000000000000000000000303', title: 'Unsafe Image Test Product', images: 'invalid' },
+  ];
+  await interceptProducts(page, entries);
+  for (const path of ['/', '/products']) {
+    await page.goto(path);
+    await expect(page.getByRole('heading', { name: idProduct.title, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Add .+ to bag$/ })).toHaveCount(1);
+    await expect(page.getByRole('heading', { name: /^Unsafe .+ Test Product$/ })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Let’s try that again.' })).toHaveCount(0);
+  }
+  await page.getByRole('button', { name: `Add ${idProduct.title} to bag`, exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Shopping Bag, 1 item', exact: true })).toBeVisible();
+});
+
+test('a product with blank or non-string merchandising metadata has useful featured and detail fallbacks', async ({ page }) => {
+  const incomplete = { ...idProduct, category: ' \t ', brand: 0 };
+  await interceptProducts(page, [incomplete], () => incomplete);
+  await page.goto('/');
+  const card = page.locator('article').filter({ has: page.getByRole('heading', { name: idProduct.title, exact: true }) });
+  await expect(card).toBeVisible();
+  await expect(card.getByText('Uncategorized', { exact: true })).toBeVisible();
+  await expect(card.getByText('Unknown brand', { exact: true })).toBeVisible();
+  await expect(card.getByText('$149.00', { exact: true })).toBeVisible();
+  await card.getByRole('link', { name: `View ${idProduct.title}`, exact: true }).click();
+  await expect(page.getByRole('heading', { name: idProduct.title, exact: true })).toBeVisible();
+  await expect(page.getByText('Uncategorized', { exact: true })).toBeVisible();
+  await expect(page.getByText('Unknown brand', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(idProduct.description, { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Add to bag', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Shopping Bag, 1 item', exact: true })).toBeVisible();
+});
+
 test('invalid id-only identifiers remain unavailable across collection, homepage and details', async ({ page }) => {
   const invalid = { ...idProduct, id: 'not-a-valid-product-id' };
   await interceptProducts(page, [invalid], () => invalid);

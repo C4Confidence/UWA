@@ -70,8 +70,6 @@ const invalidRecords: [string, unknown][] = [
   ['a numeric identifier', { ...wireProduct, id: 123 }],
   ['a missing title', { ...wireProduct, title: undefined }],
   ['a missing description', { ...wireProduct, description: undefined }],
-  ['a malformed category', { ...wireProduct, category: {} }],
-  ['a malformed brand', { ...wireProduct, brand: null }],
   ['a string price', { ...wireProduct, price: '125.5' }],
   ['a negative price', { ...wireProduct, price: -1 }],
   ['a non-finite price', { ...wireProduct, price: Number.POSITIVE_INFINITY }],
@@ -86,6 +84,53 @@ for (const [description, record] of invalidRecords) {
     expect(normalizeProduct(record)).toBeNull();
   });
 }
+
+const incompleteLabels: [string, unknown][] = [
+  ['missing', undefined],
+  ['null', null],
+  ['empty', ''],
+  ['whitespace-only', ' \n\t '],
+  ['numeric', 123],
+  ['boolean', false],
+  ['array', ['Audio']],
+  ['object', { name: 'Audio' }],
+];
+
+for (const [description, value] of incompleteLabels) {
+  test(`normalization labels ${description} category and brand without changing commercial fields`, () => {
+    const raw = { ...wireProduct, category: value, brand: value };
+    const original = structuredClone(raw);
+    expect(normalizeProduct(raw)).toEqual({
+      ...original, _id: id, category: 'Uncategorized', brand: 'Unknown brand',
+    });
+    expect(raw).toEqual(original);
+  });
+}
+
+test('normalization preserves already-valid category and brand strings exactly', () => {
+  const raw = { ...wireProduct, category: ' Audio ', brand: ' Test brand ' };
+  expect(normalizeProduct(raw)).toEqual({ ...raw, _id: id });
+});
+
+test('ten-product catalog retains eight valid records and two incomplete category/brand records', async () => {
+  const records = Array.from({ length: 10 }, (_, index) => ({
+    ...wireProduct, id: (index + 1).toString(16).padStart(24, '0'),
+  }));
+  const incomplete = [
+    ...records.slice(0, 8),
+    { ...records[8], category: undefined, brand: null },
+    { ...records[9], category: {}, brand: '   ' },
+  ];
+  const original = structuredClone(incomplete);
+  respondWith(envelope(incomplete));
+  const products = await getCatalog();
+  expect(products).toHaveLength(10);
+  expect(products.slice(0, 8)).toEqual(records.slice(0, 8).map(record => ({ ...record, _id: record.id })));
+  expect(products.slice(8)).toEqual(records.slice(8).map(record => ({
+    ...record, _id: record.id, category: 'Uncategorized', brand: 'Unknown brand',
+  })));
+  expect(incomplete).toEqual(original);
+});
 
 test('catalog accepts data.products with mixed aliases and deduplicates normalized identities across pages', async () => {
   const firstPage = Array.from({ length: 100 }, (_, index) => ({
@@ -116,12 +161,65 @@ test('individual product reads normalize raw id-only responses and retain null/n
   expect(requested).toEqual([`/api/product/${id}`, `/api/product/${id}`]);
 });
 
-test('collection helpers reject malformed records instead of silently returning a partial catalog', async () => {
+test('collection helpers keep safe products while rejecting unsafe records and unsafe details', async () => {
   const invalid = { ...wireProduct, id: 'invalid' };
-  respondWith(envelope([wireProduct, invalid]), envelope([invalid]), invalid);
+  respondWith(envelope([wireProduct, invalid]), envelope([invalid, wireProduct]), invalid);
+  expect(await getCatalog()).toEqual([{ ...wireProduct, _id: id }]);
+  expect(await getFeatured()).toEqual([{ ...wireProduct, _id: id }]);
+  await expect(getProduct(id)).rejects.toThrow('This product’s information is temporarily unavailable.');
+});
+
+test('featured and detail reads use the same metadata fallbacks and preserve product data', async () => {
+  const incomplete = { ...wireProduct, category: null, brand: false };
+  const normalized = { ...wireProduct, _id: id, category: 'Uncategorized', brand: 'Unknown brand' };
+  respondWith(envelope([incomplete]), incomplete);
+  expect(await getFeatured()).toEqual([normalized]);
+  expect(await getProduct(id)).toEqual(normalized);
+});
+
+test('metadata fallbacks do not rescue unsafe identity, price, quantity, description or images', async () => {
+  const incomplete = { ...wireProduct, category: null, brand: null };
+  for (const patch of [{ id: 'invalid' }, { price: '125.5' }, { quantity: -1 }, { description: {} }, { images: {} }]) {
+    const raw = { ...incomplete, ...patch };
+    expect(normalizeProduct(raw)).toBeNull();
+    respondWith(envelope([wireProduct, raw]), raw);
+    expect(await getCatalog()).toEqual([{ ...wireProduct, _id: id }]);
+    await expect(getProduct(id)).rejects.toThrow('This product’s information is temporarily unavailable.');
+  }
+});
+
+test('catalog pagination continues after a full raw page of unsafe records', async () => {
+  const unsafe = Array.from({ length: 100 }, () => ({ ...wireProduct, price: -1 }));
+  const requested = respondWith(envelope(unsafe), envelope([wireProduct]));
+  expect(await getCatalog()).toEqual([{ ...wireProduct, _id: id }]);
+  expect(requested).toHaveLength(2);
+  expect(requested[1]).toContain('page=2');
+});
+
+test('catalog keeps valid earlier pages when the final page has only unsafe records', async () => {
+  const firstPage = Array.from({ length: 100 }, (_, index) => ({
+    ...wireProduct, id: (index + 1).toString(16).padStart(24, '0'),
+  }));
+  respondWith(envelope(firstPage), envelope([{ ...wireProduct, price: -1 }]));
+  expect(await getCatalog()).toEqual(firstPage.map(record => ({ ...record, _id: record.id })));
+});
+
+test('nonempty catalog and featured responses with no safe products remain explicit errors', async () => {
+  const invalid = { ...wireProduct, quantity: -1 };
+  respondWith(envelope([invalid]), envelope([invalid]));
   await expect(getCatalog()).rejects.toThrow('Some product information is unavailable.');
   await expect(getFeatured()).rejects.toThrow('The collection is temporarily unavailable.');
-  await expect(getProduct(id)).rejects.toThrow('This product’s information is temporarily unavailable.');
+});
+
+test('all-unsafe catalog pages ending in a 404 still report unavailable product information', async () => {
+  const invalidPage = envelope(Array.from({ length: 100 }, () => ({ ...wireProduct, quantity: -1 })));
+  let page = 0;
+  globalThis.fetch = async () => new Response(JSON.stringify(++page === 1 ? invalidPage : {}), {
+    status: page === 1 ? 200 : 404,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  await expect(getCatalog()).rejects.toThrow('Some product information is unavailable.');
+  expect(page).toBe(2);
 });
 
 test('collection helpers reject a broken products envelope but still accept an empty collection', async () => {
