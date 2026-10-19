@@ -21,6 +21,26 @@ export function isProduct(value: unknown): value is Product {
   );
 }
 
+/** Adapt API identifiers without weakening the canonical frontend Product shape. */
+export function normalizeProduct(value: unknown): Product | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const product = value as Record<string, unknown>;
+  // Existing _id values stay authoritative; id is the backend's JSON alias.
+  const normalized = { ...product, _id: product._id ?? product.id };
+  return isProduct(normalized) ? normalized : null;
+}
+
+function normalizeProducts(value: unknown): Product[] | null {
+  if (!Array.isArray(value)) return null;
+  const products: Product[] = [];
+  for (const entry of value) {
+    const product = normalizeProduct(entry);
+    if (!product) return null;
+    products.push(product);
+  }
+  return products;
+}
+
 async function request(url: string, signal?: AbortSignal): Promise<Response> {
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -57,11 +77,12 @@ export async function getCatalog(signal?: AbortSignal): Promise<Product[]> {
     const entries: unknown = data?.data?.products;
     if (!Array.isArray(entries))
       throw new Error("The collection is temporarily unavailable.");
-    if (!entries.every(isProduct))
+    const normalized = normalizeProducts(entries);
+    if (!normalized)
       throw new Error(
         "Some product information is unavailable. Please try again later.",
       );
-    for (const product of entries) {
+    for (const product of normalized) {
       if (!seen.has(product._id)) {
         seen.add(product._id);
         products.push(product);
@@ -79,12 +100,9 @@ export async function getFeatured(signal?: AbortSignal): Promise<Product[]> {
   if (!response.ok)
     throw new Error("We couldn’t load the collection. Please try again.");
   const data = await response.json();
-  if (
-    !Array.isArray(data?.data?.products) ||
-    !data.data.products.every(isProduct)
-  )
-    throw new Error("The collection is temporarily unavailable.");
-  return data.data.products;
+  const products = normalizeProducts(data?.data?.products);
+  if (!products) throw new Error("The collection is temporarily unavailable.");
+  return products;
 }
 
 export async function getProduct(
@@ -96,9 +114,10 @@ export async function getProduct(
   if (response.status === 404) return null;
   if (!response.ok)
     throw new Error("We couldn’t load this product. Please try again.");
-  const product: unknown = await response.json();
-  if (product === null) return null;
-  if (!isProduct(product))
+  const data: unknown = await response.json();
+  if (data === null) return null;
+  const product = normalizeProduct(data);
+  if (!product)
     throw new Error("This product’s information is temporarily unavailable.");
   return product;
 }
