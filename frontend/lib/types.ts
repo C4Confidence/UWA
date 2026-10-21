@@ -18,6 +18,7 @@ export interface Account {
   lastname: string;
   email: string;
   token: string;
+  role?: "user" | "admin";
 }
 
 export interface CartItem {

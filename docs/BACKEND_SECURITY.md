@@ -1,61 +1,70 @@
-# Existing backend issues to address separately
+# Backend security and deployment boundaries
 
-The frontend redesign restores the existing Express/MongoDB source without changing its API contracts, authentication implementation, database models, or stored records. The backend was restored from the previous `work` commit, `e4d347ad02773cda367683d38b9d4874c2193943`. Before committing, inherited trailing whitespace was removed from four controller/route files to pass Git's whitespace check; backend behavior was not changed. This is a source review, not a penetration test. These findings are outside the frontend redesign and require a separate backend change before public production use.
+The administrator dashboard is based on the premium storefront commit `a5e4a92c2453da94bf255980adcd619af15dbbec`. That storefront originally retained the legacy backend; this branch intentionally changes its authorization, validation, uploads, and error handling. Existing MongoDB model fields and indexes are preserved. Setup does not create or promote a real administrator, seed products, or migrate existing records.
 
-## Access control and sensitive data
+## Security changes implemented
 
-| Priority | Source | Existing behavior and required follow-up |
+| Area | Current behavior | Implementation |
 | --- | --- | --- |
-| Critical | `routes/authRoute.js:24`; `controller/userCtrl.js:149` | `DELETE /api/user/:id` has no authentication or authorization middleware. Require an authenticated, authorized actor and validate the target account before deletion. |
-| Critical | `controller/userCtrl.js:17`; `models/userModel.js:27` | Registration passes the entire request body to `User.create`, including the schema's `role` and other sensitive fields. Use a server-controlled allowlist and assign privileges only through an authorized administration flow. |
-| High | `routes/authRoute.js:20`; `controller/userCtrl.js:125` | `GET /api/user/all-Users` is public and returns full user documents, including password hashes and stored refresh tokens. Restrict access and return an explicit safe projection. |
-| High | `controller/userCtrl.js:18`, `controller/userCtrl.js:112`, `controller/userCtrl.js:139`, `controller/userCtrl.js:176`, `controller/userCtrl.js:210`; `models/userModel.js:23`, `models/userModel.js:41` | Several registration/account responses serialize full user documents. Passwords and tokens are not excluded by the schema. Ensure sensitive fields never leave the API, including after password changes. |
-| High | `controller/userCtrl.js:29`; `middlewares/authMiddleware.js:12` | Login and token verification do not reject `isBlocked` accounts. Enforce account status consistently on login and protected requests. |
-| High | `controller/userCtrl.js:57`; `middlewares/authMiddleware.js:24` | Refresh handling logs cookie contents and administrator checks log the user document. Remove sensitive logs and review log access and retention. |
+| Administrator authorization | Every admin catalog route, legacy product mutation, and upload requires an authenticated, unblocked database user whose current role is `admin`. JWT role claims and browser state do not grant privileges. | `middlewares/authMiddleware.js`, `routes/adminProductRoute.js`, `routes/productRoute.js`, `routes/uploadRoute.js` |
+| JWT verification | Bearer headers must contain exactly one token. Verification explicitly permits HS256, validates the account ID, and rejects invalid, expired, deleted-user, and newly typed refresh tokens. Missing/invalid authentication returns 401; blocked accounts and insufficient roles return 403. | `middlewares/authMiddleware.js`, `config/jwtToken.js`, `config/refreshToken.js` |
+| Safe current user | `GET /api/user/me` returns a direct object containing `_id`, `id`, names, email, database role, and blocked status. It never returns password hashes, refresh/reset tokens, cart, addresses, or wishlist. | `routes/authRoute.js`, `controller/userCtrl.js` |
+| Registration and accounts | Registration allowlists identity/contact/password fields and always assigns `role: "user"` and `isBlocked: false`. Profile updates cannot change privileges. User listing, lookup, deletion, blocking, and unblocking require administrator authorization; every user response uses an explicit safe projection. | `controller/userCtrl.js`, `routes/authRoute.js` |
+| Credential input | Account fields must be bounded strings before entering database queries. New passwords require at least eight characters and at most 72 UTF-8 bytes, avoiding bcrypt truncation. Existing bcrypt password hashes remain compatible with the upgraded library. The password hook no longer rehashes unchanged passwords and generates salts asynchronously. | `controller/userCtrl.js`, `models/userModel.js` |
+| Refresh and logout | Refresh verifies the matched account, checks blocked status, rotates the stored refresh token, and issues an access token for that user's ID. Cookies use consistent names/paths, HttpOnly, SameSite=Lax, and Secure in production. Logout revokes the matching stored refresh token and clears current and legacy root-scoped cookies. | `controller/userCtrl.js` |
+| Product writes and reads | Product mutations allow only catalog fields, validate required strings and finite non-negative prices/integer stock, preserve explicitly supplied slugs, and return 409 for duplicate slugs. Partial edits do not replace unrelated legacy metadata. Filtering, projections, sorting, and pagination use explicit allowlists and bounded values. | `controller/productCtrl.js`, `utils/productValidation.js` |
+| Upload validation | Authorization precedes multipart parsing. A request accepts at most eight JPEG/PNG/WebP files, each at most 5 MiB. Content signatures must match the declared supported type; images are fully decoded, checked for dimensions/pixels/animation, stripped of metadata, resized when needed, and re-encoded to WebP. SVG and malformed/spoofed files are rejected. Concurrent upload work is bounded. | `routes/uploadRoute.js` |
+| Upload publication | Verified batches use generated UUID filenames and exclusive staged writes; failed batches are rolled back. Public `/uploads` serving denies dotfiles and directory indexes, sets `nosniff` and a restrictive asset CSP, and serves immutable filenames. Next.js rewrites make those assets accessible on the storefront origin. | `services/imageStorage.js`, `app.js`, `frontend/next.config.mjs` |
+| Error and startup handling | Public errors omit stacks, database internals, credentials, and filesystem paths. Validation, conflict, missing-resource, authentication, and size failures receive appropriate HTTP statuses. Cookies/user documents are not logged. The API awaits MongoDB before listening; startup failures are redacted. | `middlewares/errorHandler.js`, `app.js`, `config/dbConnect.js`, `index.js` |
 
-## Session and authentication correctness
+## Tests and database isolation
 
-| Priority | Source | Existing behavior and required follow-up |
-| --- | --- | --- |
-| High | `controller/userCtrl.js:36` | The refresh cookie has `httpOnly`, but does not explicitly set `secure`, `sameSite`, or a narrowly considered path. Define the production cookie and CSRF policy together with the actual deployment topology. |
-| High | `controller/userCtrl.js:66` | Refresh issues a token using the `User` model's `_id` rather than the authenticated user's `_id`. The resulting token cannot identify the account correctly. The redesigned frontend does not rely on this endpoint. |
-| Medium | `controller/userCtrl.js:79`, `controller/userCtrl.js:86` | Logout clears `RefreshToken` with different capitalization from the `refreshToken` cookie created at login. Correct the cookie name/options and verify expiry and revocation end to end. Existing logout does clear the stored database refresh token when the account is found. |
-| Medium | `middlewares/authMiddleware.js:7` | A malformed authorization header beginning with `Bearer` but lacking a token never responds or calls `next`. A verified token for a deleted user is also not explicitly rejected before `next`. Validate the full header and account presence and return appropriate HTTP errors. |
-| Medium | `index.js:14`; `controller/userCtrl.js:14`, `controller/userCtrl.js:28` | Authentication routes have no rate limiting, and input types/lengths are not explicitly validated before queries. Add request schemas, abuse protection, and safe authentication error semantics. |
-| Medium | `models/userModel.js:54` | The password pre-save hook calls `next()` without returning when the password is unchanged, then continues to hash it. This risks double-hashing when an existing user document is saved for other reasons. Return early and test password lifecycle paths in a backend task. |
-| Medium | `models/userModel.js:65` | Password reset helpers refer to `crypto` without importing Node's `crypto` module in the model. There is no reset route in the restored API; the redesign does not claim a working password reset flow. |
+`app.js` exports `createApp({ uploadDirectory, logging, trustProxy })` without loading `.env`, connecting to MongoDB, or opening a port. This lets integration tests use an explicitly isolated connection and temporary image directory.
 
-## Validation, errors, and operational behavior
+`tests/admin-api.test.js` requires `TEST_MONGODB_URL` to name a database beginning with `uwa_admin_test_`; it refuses normal application/default names. Each execution substitutes a fresh random `uwa_admin_test_<random>` database, creates only synthetic accounts/products, checks the connected database before destructive operations, and removes that generated database and its temporary images afterward. It never loads the normal application `.env` or uses the store's `MONGODB_URL` as a test connection.
 
-| Priority | Source | Existing behavior and required follow-up |
-| --- | --- | --- |
-| High | `middlewares/errorHandler.js:14`; `controller/productCtrl.js:114` | API errors return stack traces or internal error messages. Provide safe public messages with correct HTTP status codes and retain details only in protected server logs. |
-| Medium | `controller/productCtrl.js:62`, `controller/productCtrl.js:88` | Product filters and projections are built from arbitrary query parameters, and pagination is not bounded. Use an explicit filter/sort/projection allowlist, validate numeric ranges, and cap page size. |
-| Medium | `controller/productCtrl.js:95` | Pagination checks total document count instead of filtered count and returns a 404 for `page=1` in an empty database. Establish a documented pagination/count contract; the frontend handles empty results without claiming catalog records exist. |
-| Medium | `controller/productCtrl.js:26`; `controller/userCtrl.js:101` | Update operations do not enable Mongoose update validators. Validate allowed fields and values before writes and enforce schema validation in the update path. |
-| Medium | `config/dbConnect.js:5`; `index.js:26` | The database connection is not awaited and success is logged before MongoDB confirms connectivity. The API can begin listening while its database is unavailable. Await connection and fail or report readiness accurately. |
-| Medium | `models/userModel.js:18` | The optional `mobile` field has a non-sparse unique index. Multiple accounts omitting it can conflict under the existing index. Resolve desired account requirements and index migration separately without silently changing existing data. |
+Example, against a dedicated local test MongoDB service:
+
+```bash
+TEST_MONGODB_URL=mongodb://127.0.0.1:27017/uwa_admin_test_requested \
+  node --test tests/admin-api.test.js
+```
+
+The suite covers authentication failures and database role changes, blocked/deleted accounts, registration privilege escalation, safe responses, existing bcrypt hash compatibility, unauthorized legacy/admin mutations, product CRUD/stock synchronization, legacy metadata preservation, search/pagination, duplicate slugs, image references, real image decoding/upload/retrieval, upload limits, profile/password behavior, and refresh/logout.
+
+`frontend/tests/admin.spec.ts` uses intercepted API responses and synthetic browser fixtures to exercise access gates, forms, image controls, errors, confirmations, keyboard focus, and mobile layouts. These fixtures are not inserted into MongoDB. Browser tests complement the real API integration suite; mocked requests alone do not establish backend authorization or database correctness. See the main README for frontend startup, TypeScript/lint/build checks, and Playwright commands.
+
+## Remaining concrete limitations
+
+### Sessions, account recovery, and existing data
+
+- The existing optional `mobile` field retains its non-sparse unique index. Multiple accounts omitting mobile can still conflict. The storefront currently requires mobile during registration. Changing that index or existing values requires a separately reviewed migration.
+- Access tokens retain their existing one-day lifetime. Logout clears the browser session and revokes the stored refresh token, but does not immediately revoke every already-issued access JWT. Blocking/deleting an account and changing its role take effect on the next authenticated request because the database is checked each time. Password changes revoke refresh tokens and reject access tokens from earlier seconds; JWT issuance timestamps have second precision, so a token issued during the same second can survive that cutoff. A per-session revocation mechanism is a separate improvement.
+- Legacy signed JWTs without a `type` claim remain accepted to preserve existing sessions until their original expiry. Historically, access and refresh JWTs shared the same untyped format, so an untyped legacy refresh JWT can also satisfy the legacy access-token check while valid. Newly issued tokens distinguish access from refresh. A deliberate `JWT_SECRET` rotation invalidates all historical tokens and signs every account out; perform it as an owner-approved rollout operation, never silently during setup.
+- Before integration, the owner should audit existing administrator roles: this branch prevents new registration privilege escalation, but cannot establish whether historical roles were legitimately granted. No existing roles or accounts are changed automatically.
+- The storefront retains its access token in `sessionStorage`. This avoids persistence across independent browser sessions, but any successful same-origin script injection can read it. There is no implemented server-side access-token revocation list, MFA, invitation/provisioning UI, or account recovery/email delivery flow. Importing `crypto` fixes the existing password-reset helper dependency; it does not implement a usable password-reset service.
+- Legacy `GET /api/user/logout` remains available for compatibility; a POST alias is also provided. Cross-site browser requests to refresh/logout are rejected when their Fetch Metadata header identifies them as cross-site. Keep the SameSite cookie policy and deployment origins consistent; review a dedicated CSRF/session design if cookie-authenticated write operations are added later.
+- Administrator actions are authorized but do not have a dedicated audit trail, approval workflow, or edit-conflict/version check. Product IDs and untouched fields are preserved; simultaneous updates to the same field can still overwrite one another. Database backups and an operational recovery process remain necessary.
+
+### Rate limits and proxy trust
+
+Login/refresh allow 30 failed attempts per IP in 15 minutes; registration allows 20 requests per IP per hour. The default `express-rate-limit` store is process memory: counters reset on restart and are not shared across replicas. Configure a shared store and edge-level request/upload quotas for a multi-instance deployment. Upload concurrency limits are also per router/process and do not replace infrastructure bandwidth, memory, or disk quotas.
+
+`TRUST_PROXY` defaults to false. Explicit trusted proxy address/CIDR rules or a verified fixed hop count may be configured; the value `true` is rejected by startup. Configure this for the actual network path so clients cannot spoof the rate-limit identity. With no proxy trust, requests forwarded by the local Next.js server may share its backend IP and therefore its limit. Numeric hop counts are safe only when every permitted route has the expected trusted proxy chain.
+
+### HTTPS, browser policies, and image storage
+
+- Production requires HTTPS and `NODE_ENV=production` so refresh cookies use Secure. Keep the Express service behind the intended application/proxy boundary, restrict database access, and configure trusted proxies explicitly. Never disable TLS or package-integrity checks to solve setup failures.
+- The frontend has `nosniff`, frame-denial, and referrer headers. The restrictive CSP attached to uploaded assets protects those asset responses; it is not a complete storefront script CSP. A nonce-aware application CSP, including the exact approved image/CDN origins, remains a deployment integration task. Keep secrets out of `NEXT_PUBLIC_*`, repository files, logs, screenshots, and browser fixtures.
+- Development uploads can use local filesystem storage. Under `NODE_ENV=production`, upload writes fail closed unless `UPLOAD_STORAGE=filesystem` and an absolute `UPLOAD_DIR` are configured. That directory must actually be a persistent mounted volume with suitable access controls, capacity monitoring, and backups; setting an absolute path alone does not create durability.
+- For object storage/CDN integration, implement the `writeBatch(verifiedWebpBuffers) -> [{ url }]` adapter in `services/imageStorage.js` using deployment-provided credentials with minimum write permissions. Configure the persistent bucket/container, region/endpoint, public HTTPS delivery origin, and retention/backups outside source control. `UPLOAD_PUBLIC_BASE_URL` can advertise a configured HTTPS image delivery origin; it does not upload files to an object-storage provider by itself.
+- Uploaded product images are intentionally public. Do not upload private documents. Removing references or deleting a product does not delete image files because other products may share them. Cancelled drafts can leave unreferenced uploaded assets; a separately reviewed retention/garbage-collection process is needed before large-scale use.
+- Existing root-relative image paths and HTTPS URLs remain supported. External image availability and privacy are controlled by those hosts. Keep optimizer `IMAGE_HOSTS` limited to approved hosts; no arbitrary remote image is fetched by the Express upload handler.
 
 ## Dependency audit
 
-`npm audit --json` against the root API lockfile on 2026-10-16 reported 10 affected dependency entries: 2 critical, 4 high, 3 moderate, and 1 low. This includes transitive dependencies; counts do not indicate the number of independently exploitable application paths. No automatic dependency rewrites were applied.
+At this review, `npm audit --json` against the API lockfile reports **0 vulnerabilities**, and `npm audit --omit=dev --json` against the frontend lockfile also reports **0**. The backend dependencies were updated and existing bcrypt 5 hashes are covered by a compatibility regression test.
 
-| Dependency | Audit severity | Follow-up |
-| --- | --- | --- |
-| `mongoose` 8.7.0 (`package.json`) | Critical | Review [search injection](https://github.com/advisories/GHSA-vg7j-7cwx-8wgw) and [update-casting prototype pollution](https://github.com/advisories/GHSA-664h-wqgq-64gw) advisories alongside the API's query/update validation. |
-| `tar` via `bcrypt` / `@mapbox/node-pre-gyp` | Critical | Review installation-time [archive path traversal](https://github.com/advisories/GHSA-34x7-hfp2-rc4v) and other archive parsing advisories. Use a supported bcrypt release and revalidate password compatibility. |
-| `bcrypt`, `@mapbox/node-pre-gyp`, `express`, `path-to-regexp` | High | Review dependency chains and [routing regular expression denial of service](https://github.com/advisories/GHSA-37ch-88jc-xwx2). |
-| `body-parser`, `morgan`, `qs` | Moderate | Review body/query parser denial of service and logging injection advisories. |
-| `on-headers` | Low | Review [response header manipulation](https://github.com/advisories/GHSA-76c9-3jph-rj3q). |
+The full frontend development dependency audit currently reports **5 high-severity dependency entries** in the ESLint chain (`eslint-config-next` → `@next/eslint-plugin-next` → `fast-glob` → `micromatch` → `braces`). They stem from the [braces stack-exhaustion advisory](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm). This is a development tooling chain, not five independently established production exploits. Review a supported patched resolution before accepting attacker-controlled glob patterns into tooling. Re-run both full and runtime audits when dependencies change; zero reported advisories is not proof of application security.
 
-Re-run `npm audit` when the backend remediation task begins because registry advisories and recommended versions change over time. Upgrade direct and transitive dependencies with regression tests rather than treating an audit count or an automatic fix as a completed remediation.
-
-## Boundaries of this preview
-
-- The API provides product reads, authenticated product administration, and user authentication/account routes. It has no order, payment, shipping, tax, inventory reservation, or persisted cart endpoint.
-- The storefront cart is local to the browser. Checkout does not create an order, charge a payment, or report payment success.
-- Existing MongoDB collections are reused without seeding or editing their records. No fake product records are introduced to populate the design.
-- `.env` files and credentials must remain untracked. Configure `MONGODB_URL`, `JWT_SECRET`, and optionally `PORT` privately for local development. Rotate historical credentials if they were previously stored in repository history.
-- Dependency versions were recovered from the validated onboarding tooling to make the legacy API reproducible. Review and upgrade backend dependencies in a separate compatibility/security task; a passing syntax or smoke check is not a security assessment.
-
-Before public launch, resolve access-control and data-exposure findings first, then validate session handling, request validation, dependency advisories, and deployment configuration with dedicated regression tests.
+The dashboard exposes catalog and inventory facts only. Orders, payments, revenue, shipping, tax, inventory reservations, and a server-persisted shopping cart are not implemented and are not represented as working capabilities.

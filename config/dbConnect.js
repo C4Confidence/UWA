@@ -1,11 +1,8 @@
-const { default: mongoose } = require("mongoose")
-
-const dbConnect = () => {
-    try {
-        const conn = mongoose.connect(process.env.MONGODB_URL);
-        console.log("Database Connected Successfully");
-    } catch (error) {
-        console.log("Database error");
+const mongoose = require("mongoose");
+const dbConnect = async (uri = process.env.MONGODB_URL) => {
+    if (typeof uri !== "string" || !/^mongodb(?:\+srv)?:\/\//.test(uri)) {
+        throw new Error("Configure a valid MONGODB_URL before starting the API.");
     }
+    return mongoose.connect(uri, { serverSelectionTimeoutMS: 10000 });
 };
 module.exports = dbConnect;

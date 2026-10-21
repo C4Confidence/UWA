@@ -35,12 +35,13 @@ function readAccount(value: unknown): Account | null {
     lastname: user.lastname,
     email: user.email,
     token: user.token,
+    ...(user.role === "admin" || user.role === "user" ? { role: user.role } : {}),
   };
 }
 
-export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
+export function AuthForm({ mode, redirectTo = "/account" }: { mode: "signin" | "signup"; redirectTo?: string }) {
   const registering = mode === "signup";
-  const { account, ready, signIn } = useStore();
+  const { account, ready, signIn, signOut } = useStore();
   const router = useRouter();
   const submitting = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -141,7 +142,7 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
         return;
       }
       if (registering) {
-        // Registration returns a full user document. Do not parse or retain it.
+        // Registration does not start a session. Do not retain its response.
         await response.body?.cancel();
         form.reset();
         setSuccess(true);
@@ -154,7 +155,7 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
         return;
       }
       signIn(user);
-      router.replace("/account");
+      router.replace(redirectTo);
     } catch {
       setError(
         controller.signal.aborted
@@ -191,9 +192,10 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
         <p className="muted">
           Welcome back, {account.firstname}. Your next find is waiting.
         </p>
-        <Link className="button button-dark" href="/account">
-          Go to your account <ArrowRight size={18} aria-hidden="true" />
+      <Link className="button button-dark" href={redirectTo}>
+        {redirectTo.startsWith("/admin") ? "Continue to dashboard" : "Go to your account"} <ArrowRight size={18} aria-hidden="true" />
         </Link>
+      {redirectTo.startsWith("/admin") && <button className="text-link" onClick={() => void signOut()}>Use another account</button>}
       </div>
     );
 
@@ -430,6 +432,13 @@ export function AccountPanel() {
             <dd>{account.email}</dd>
           </div>
         </dl>
+        {account.role === "admin" && (
+          <p>
+            <Link href="/admin" className="button button-yellow">
+              Open UWA Studio <ArrowUpRight size={18} aria-hidden="true" />
+            </Link>
+          </p>
+        )}
         <button
           className="button button-outline"
           type="button"

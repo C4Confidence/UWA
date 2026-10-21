@@ -9,7 +9,9 @@ export const metadata: Metadata = {
   robots: { index: false, follow: true },
 };
 
-export default function SignInPage() {
+export default async function SignInPage({ searchParams }: { searchParams: Promise<{ next?: string | string[] }> }) {
+  const { next } = await searchParams;
+  const redirectTo = typeof next === "string" && (next === "/admin" || next.startsWith("/admin/")) && !/[\\\r\n]/.test(next) ? next : "/account";
   return (
     <div className="auth-layout page-wrap">
       <aside className="auth-story">
@@ -33,7 +35,7 @@ export default function SignInPage() {
         </div>
       </aside>
       <section className="auth-panel" aria-label="Sign in">
-        <AuthForm mode="signin" />
+        <AuthForm mode="signin" redirectTo={redirectTo} />
       </section>
     </div>
   );

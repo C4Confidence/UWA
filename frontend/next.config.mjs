@@ -21,7 +21,10 @@ const nextConfig = {
     })),
   },
   async rewrites() {
-    return [{ source: "/api/:path*", destination: `${apiOrigin}/api/:path*` }];
+    return [
+      { source: "/api/:path*", destination: `${apiOrigin}/api/:path*` },
+      { source: "/uploads/:path*", destination: `${apiOrigin}/uploads/:path*` },
+    ];
   },
   async headers() {
     return [

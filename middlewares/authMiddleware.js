@@ -2,33 +2,50 @@ const User = require("../models/userModel");
 const jwt = require("jsonwebtoken");
 const asyncHandler = require("express-async-handler");
 
+function unauthorized() {
+    const error = new Error("Please sign in again to continue.");
+    error.status = 401;
+    return error;
+}
+
 const authMiddleware = asyncHandler(async (req, res, next) => {
-    let token;
-    if (req?.headers?.authorization?.startsWith("Bearer")) {
-        token = req.headers.authorization.split(" ")[1];
-        try {
-            if (token) {
-                const decoded = jwt.verify(token, process.env.JWT_SECRET);
-                const user = await User.findById(decoded?.id);
-                req.user = user;
-                next();
-            }
-        } catch (error) {
-            throw new Error("Not Authorized token expired. Please login again");
-        }
-    } else {
-        throw new Error("There is no token attached to header");
+    const authorization = req.get("authorization");
+    const match = typeof authorization === "string" ? authorization.match(/^Bearer ([^\s]+)$/i) : null;
+    if (!match || match[1].length > 4096) throw unauthorized();
+    let decoded;
+    try {
+        decoded = jwt.verify(match[1], process.env.JWT_SECRET, { algorithms: ["HS256"] });
+    } catch {
+        throw unauthorized();
     }
+    if (!decoded || typeof decoded !== "object" || typeof decoded.id !== "string" ||
+        !/^[a-f\d]{24}$/i.test(decoded.id) || (decoded.type !== undefined && decoded.type !== "access")) {
+        throw unauthorized();
+    }
+    // Privileges always come from the current database record, never a JWT role claim.
+    const user = await User.findById(decoded.id).select(
+        "firstname lastname email mobile role isBlocked passwordChangedAt createdAt updatedAt",
+    );
+    if (!user) throw unauthorized();
+    if (user.passwordChangedAt && (!decoded.iat || decoded.iat < Math.floor(user.passwordChangedAt.getTime() / 1000))) {
+        throw unauthorized();
+    }
+    if (user.isBlocked) {
+        const error = new Error("This account is blocked. Please contact the store administrator.");
+        error.status = 403;
+        throw error;
+    }
+    req.user = user;
+    next();
 });
-const isAdmin = asyncHandler(async (req, res, next) => {
-    console.log(req.user);
-    const { email } = req.user;
-    const adminUser = await User.findOne({ email });
-    if (adminUser.role !== "admin") {
-        throw new Error("You are not an admin");
+
+const isAdmin = (req, res, next) => {
+    if (!req.user) return next(unauthorized());
+    if (req.user.role !== "admin") {
+        const error = new Error("Administrator access is required.");
+        error.status = 403;
+        return next(error);
     }
-    else {
-        next();
-    }
-});
+    next();
+};
 module.exports = { authMiddleware, isAdmin };

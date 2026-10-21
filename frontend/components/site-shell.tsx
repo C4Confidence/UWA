@@ -69,6 +69,7 @@ export function Header() {
     return () => document.removeEventListener("keydown", close);
   }, [menu, search]);
   const count = cart.reduce((sum, item) => sum + item.quantity, 0);
+  if (path === "/admin" || path.startsWith("/admin/")) return null;
   return (
     <>
       <div className="announcement">
@@ -208,6 +209,8 @@ export function Header() {
 }
 
 export function Footer() {
+  const path = usePathname();
+  if (path === "/admin" || path.startsWith("/admin/")) return null;
   return (
     <footer className="site-footer">
       <div className="footer-top">

@@ -146,7 +146,8 @@ test('all ten safe products remain shoppable when two lack usable category and b
   await expect(page.getByText('$49.00', { exact: true })).toBeVisible();
 
   await page.getByRole('link', { name: `View ${missing.title}`, exact: true }).click();
-  await expect(page.getByRole('heading', { name: missing.title, exact: true })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/products/${missing.id}$`));
+  await expect(page.getByRole('heading', { name: missing.title, level: 1, exact: true })).toBeVisible();
   await expect(page.getByText('Unknown brand', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Uncategorized', { exact: true })).toBeVisible();
   await expect(page.getByText('$39.00', { exact: true })).toBeVisible();

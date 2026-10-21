@@ -2,6 +2,8 @@
 
 A responsive Next.js storefront using UWA’s existing Express/MongoDB API. The redesign starts from `uwa-codex-clean` (`81ac1e995610a2a18e11debea2967dd96294cf74`) on `feat/uwa-premium-redesign`.
 
+**Admin dashboard preview:** `feat/uwa-admin-dashboard` adds UWA Studio on top of the verified redesign (`a5e4a92`). Follow [the isolated Ubuntu setup and review guide](docs/ADMIN_DASHBOARD.md) to use a separate checkout, backend **5002**, frontend **3002**, and a new test database. It covers manual test-account authorization, uploads, API contracts, validation and storage requirements. Keep your original applications and database separate during review.
+
 The clean base contained only `.gitignore` and `frontend/next-env.d.ts`. The original backend source was recovered with only trailing whitespace cleanup from the preserved `work` commit (`e4d347ad02773cda367683d38b9d4874c2193943`); local Geist fonts and product/editorial assets were reused. Historical `.env` files and committed dependencies were not restored.
 
 ## Test only the new frontend against your existing API
@@ -68,7 +70,7 @@ Start the storefront in another:
 npm run dev --prefix frontend
 ```
 
-The storefront listens on port **3000** and the API on **4000**. Open port 3000 in your local browser. Next.js proxies `/api/*` to Express, preserving its existing endpoint paths and allowing same-origin authentication cookies. MongoDB must be reachable; the legacy API’s startup message alone does not prove connectivity.
+The storefront listens on port **3000** and the API on **4000**. Open port 3000 in your local browser. Next.js proxies `/api/*` and `/uploads/*` to Express, allowing same-origin authentication cookies and accessible product uploads. Startup waits for MongoDB connectivity. For admin review use the isolated 5002/3002 setup linked above instead of connecting to your existing catalog.
 
 Frontend settings are documented in `frontend/.env.example`. Create an ignored `frontend/.env.local` only if overriding defaults, then restart Next.js:
 
@@ -91,9 +93,9 @@ No Redis, email provider, payment key, or new external account is required by th
 - `/checkout`: rechecks current product prices/stock and explains that online checkout is unavailable.
 - `/about`, `/contact`, `/forgot`: brand story and honest shopping/account information; no unconnected forms or simulated recovery.
 
-The current local database has no product records. Its empty state is deliberate. Editorial photographs are inspiration, not purchasable product records or an availability guarantee. Existing products appear automatically when using a database that contains them.
+A fresh isolated database has no product records. Its empty state is deliberate. Editorial photographs are inspiration, not purchasable product records or an availability guarantee. Existing products appear automatically when deliberately using a database that contains them.
 
-The bag belongs to this browser/device and does not sync through an account. Access tokens are held in memory and session storage for this existing API; sensitive registration documents are discarded. The frontend does not rely on the broken refresh endpoint. Password reset, contact submission, orders, payment, shipping, taxes, reservation, OAuth, and account editing are not implemented by the existing backend, so the site does not simulate them.
+The bag belongs to this browser/device and does not sync through an account. Access tokens are held in memory and session storage; registration responses are discarded. The frontend does not automatically refresh sessions; sign in again after expiry. Password reset, contact submission, orders, payment, shipping, taxes, reservation, OAuth, and account editing are not implemented in the storefront, so the site does not simulate them.
 
 ## Checks and production-mode preview
 
@@ -125,4 +127,4 @@ Tests intercept API calls with clearly synthetic test-only fixtures. They **do n
 
 ## Backend boundaries
 
-The API source, models, and endpoints are unchanged. Existing security and dependency problems are documented separately in [docs/BACKEND_SECURITY.md](docs/BACKEND_SECURITY.md). This preview must not be treated as production security approval. The feature branch is for review and testing; no merge into `main` or production deployment is part of this work.
+This admin branch includes reviewed backend changes: database-backed administrator authorization, safe current-user responses, registration allowlists, bounded product validation, image uploads and authentication corrections. Product/user schema fields and indexes remain unchanged. Remaining security and deployment limitations are documented separately in [docs/BACKEND_SECURITY.md](docs/BACKEND_SECURITY.md). This feature branch is for review and isolated testing; no merge or production deployment is part of this work.
