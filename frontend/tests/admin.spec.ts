@@ -150,6 +150,42 @@ async function expectNoOverflow(page: Page) {
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 }
 
+// Raw legacy fixtures deliberately bypass the valid-product helper above.
+// Unknown API paths still terminate in mockAdmin; they never reach a database.
+async function mockRawCatalog(page: Page, records: unknown[], summary: { totalProducts: number; inStock: number; lowStock: number; outOfStock: number; totalUnits: number }) {
+  await mockAdmin(page);
+  const state = { records: structuredClone(records), summary: { ...summary }, requests: [] as RecordedRequest[] };
+  await page.route('**/api/admin/products**', async route => {
+    const request = record(route.request());
+    state.requests.push(request);
+    if (request.path === '/api/admin/products' && request.method === 'GET') {
+      const limit = Number(request.query.get('limit') || 12);
+      const pageNumber = Number(request.query.get('page') || 1);
+      return route.fulfill({ json: {
+        products: state.records.slice((pageNumber - 1) * limit, pageNumber * limit),
+        page: pageNumber, limit, total: state.records.length, totalPages: Math.ceil(state.records.length / limit),
+        summary: state.summary, categories: ['Audio'],
+      } });
+    }
+    const match = /^\/api\/admin\/products\/([a-f\d]{24})$/i.exec(request.path);
+    if (match) {
+      const index = state.records.findIndex(value => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const product = value as Record<string, unknown>;
+        return (product._id ?? product.id) === match[1];
+      });
+      if (index < 0) return route.fulfill({ status: 404, json: { message: 'Synthetic record not found' } });
+      if (request.method === 'GET') return route.fulfill({ json: state.records[index] });
+      if (request.method === 'PATCH') {
+        state.records[index] = { ...(state.records[index] as Record<string, unknown>), ...request.body };
+        return route.fulfill({ json: state.records[index] });
+      }
+    }
+    return route.fulfill({ status: 405, json: { message: 'No raw-fixture mutation handler configured' } });
+  });
+  return state;
+}
+
 test('anonymous visitors must sign in before administrator functionality is shown', async ({ page }) => {
   const state = await mockAdmin(page, { signedIn: false });
   await page.goto('/admin/products');
@@ -378,4 +414,131 @@ test('mobile administrator navigation works with the keyboard and layouts avoid 
   await page.goto('/admin/products/new');
   await expect(page.getByRole('heading', { name: 'Add a product.', exact: true })).toBeVisible();
   await expectNoOverflow(page);
+});
+
+test('mixed legacy reads preserve editable rows and API totals without inventing zero values', async ({ page }) => {
+  const valid = fixtures().slice(0, 10).map(product => ({ ...product, quantity: 100 }));
+  const missingId = '0000000000000000000000a1';
+  const aliasId = '0000000000000000000000a2';
+  const missing = { ...fixtures()[0], _id: missingId, title: undefined, price: undefined, quantity: undefined, category: [], brand: { legacy: true }, color: false };
+  const alias = { ...fixtures()[1], _id: undefined, id: aliasId, title: 'Legacy API ID Alias', price: 'unknown', quantity: '100', category: 42, brand: false };
+  const state = await mockRawCatalog(page, [missing, alias, ...valid], { totalProducts: 12, inStock: 10, lowStock: 0, outOfStock: 0, totalUnits: 1000 });
+  await page.goto('/admin/products');
+  const rows = page.getByRole('table').locator('tbody tr');
+  await expect(rows).toHaveCount(12);
+  const missingRow = rows.filter({ hasText: `ID: ${missingId}` });
+  await expect(missingRow.getByRole('link', { name: 'Untitled product', exact: true })).toHaveAttribute('href', `/admin/products/${missingId}/edit`);
+  await expect(missingRow).toContainText('Needs attention:');
+  await expect(missingRow).toContainText('Review & repair');
+  await expect(missingRow).toContainText('Unavailable');
+  await expect(missingRow).toContainText('Stock unavailable');
+  await expect(missingRow).not.toContainText('$0.00');
+  await expect(missingRow).not.toContainText('Out of stock');
+  await expect(missingRow).not.toContainText('0 units');
+  await expect(rows.filter({ hasText: 'Legacy API ID Alias' }).getByRole('link', { name: 'Legacy API ID Alias', exact: true })).toHaveAttribute('href', `/admin/products/${aliasId}/edit`);
+  await expect(page.getByText('Some catalog records need review.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Totals are reported by the API and may include incomplete legacy values.', { exact: true })).toBeVisible();
+  await page.goto('/admin');
+  await expect(page.locator('.adm-stat-card').filter({ hasText: 'Total products' }).locator('strong')).toHaveText('12');
+  await expect(page.locator('.adm-units-total strong')).toHaveText('1,000');
+  await expect(page.locator('.adm-recent-products').getByText('Untitled product', { exact: true })).toBeVisible();
+  await expect(page.locator('.adm-recent-products').getByText('Price unavailable', { exact: false }).first()).toBeVisible();
+  expect(state.requests.every(request => request.method === 'GET')).toBe(true);
+  await expectNoOverflow(page);
+});
+
+test('unusable identities retain raw pagination and never masquerade as an empty catalog', async ({ page }) => {
+  const unusable = Array.from({ length: 12 }, (_, index) => ({ ...fixtures()[0], _id: `invalid-id-${index}`, title: `Unusable record ${index + 1}` }));
+  const valid = fixtures().slice(0, 2).map(product => ({ ...product, quantity: 100 }));
+  const state = await mockRawCatalog(page, [...unusable, ...valid], { totalProducts: 14, inStock: 2, lowStock: 0, outOfStock: 0, totalUnits: 200 });
+  await page.goto('/admin/products');
+  await expect(page.getByRole('heading', { name: 'These records need review.', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'A fresh beginning.', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('table').locator('tbody tr')).toHaveCount(0);
+  await expect(page.getByText('Record 12:', { exact: false })).toBeVisible();
+  await expect(page.getByText('1–12 of 14 products', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Next page', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Next page', exact: true }).click();
+  await expect(page.getByRole('table').locator('tbody tr')).toHaveCount(2);
+  await expect(page.getByText('Page 2 of 2', { exact: true })).toBeVisible();
+  state.records = [{ title: 'No identity' }, null];
+  state.summary = { totalProducts: 2, inStock: 0, lowStock: 0, outOfStock: 0, totalUnits: 0 };
+  await page.goto('/admin/products');
+  await expect(page.getByRole('heading', { name: 'These records need review.', exact: true })).toBeVisible();
+  await expect(page.getByText('Some catalog records need review.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'A fresh beginning.', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Next page', exact: true })).toBeDisabled();
+  expect(state.requests.every(request => request.method === 'GET')).toBe(true);
+});
+
+test('legacy invalid numerics stay blank and omitted until explicitly repaired, including zero', async ({ page }) => {
+  const id = '0000000000000000000000b1';
+  const legacy = { ...fixtures()[0], _id: id, title: undefined, price: undefined, quantity: 'not recorded', category: 23, brand: { source: 'old' } };
+  const state = await mockRawCatalog(page, [legacy], { totalProducts: 1, inStock: 0, lowStock: 0, outOfStock: 0, totalUnits: 0 });
+  await page.goto(`/admin/products/${id}/edit`);
+  const price = page.getByRole('spinbutton', { name: 'Price', exact: true });
+  const quantity = page.getByRole('spinbutton', { name: 'Stock quantity', exact: true });
+  await expect(price).toHaveValue('');
+  await expect(quantity).toHaveValue('');
+  await expect(page.locator('#price-stored-issue')).toContainText('Missing');
+  await expect(page.locator('#quantity-stored-issue')).toContainText('Text: "not recorded"');
+  await expect(page.locator('#brand-stored-issue')).toContainText('Object value');
+  await page.getByRole('textbox', { name: 'Product title', exact: true }).fill('An explicitly repaired title');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).first().click();
+  await expect.poll(() => state.requests.filter(request => request.method === 'PATCH').length).toBe(1);
+  await expect(page.getByText('Changes saved.', { exact: true })).toBeVisible();
+  expect(state.requests.find(request => request.method === 'PATCH')?.body).toEqual({ title: 'An explicitly repaired title' });
+  await expect(price).toHaveValue('');
+  await expect(quantity).toHaveValue('');
+  await expect(page.getByText('This record still has stored details to review.', { exact: false })).toBeVisible();
+  await price.fill('-2');
+  await quantity.fill('1.5');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).first().click();
+  await expect(page.getByText('Enter a valid price of zero or more.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Enter a whole stock quantity of zero or more.', { exact: true })).toBeVisible();
+  expect(state.requests.filter(request => request.method === 'PATCH')).toHaveLength(1);
+  await price.fill('0');
+  await quantity.fill('0');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).first().click();
+  await expect.poll(() => state.requests.filter(request => request.method === 'PATCH').length).toBe(2);
+  await expect(page.getByRole('button', { name: 'Save changes', exact: true }).first()).toBeDisabled();
+  expect(state.requests.filter(request => request.method === 'PATCH')[1].body).toEqual({ price: 0, quantity: 0 });
+  expect(state.records[0]).toMatchObject({ price: 0, quantity: 0, category: 23, brand: { source: 'old' } });
+});
+
+test('damaged legacy galleries change only after explicit review, including an intentional empty replacement', async ({ page }) => {
+  const id = '0000000000000000000000c1';
+  const emptyId = '0000000000000000000000c2';
+  const retainedImage = { url: '/editorial/headphones.jpg', public_id: 'original-image', alt: 'Keep this metadata' };
+  const state = await mockRawCatalog(page, [
+    { ...fixtures()[0], _id: id, images: [retainedImage, 'javascript:invalid', { url: '/api/private' }] },
+    { ...fixtures()[1], _id: emptyId, images: ['javascript:invalid'] },
+  ], { totalProducts: 2, inStock: 1, lowStock: 1, outOfStock: 1, totalUnits: 3 });
+  await page.goto(`/admin/products/${id}/edit`);
+  const confirmation = page.getByRole('checkbox', { name: 'I reviewed the safe image references and want to replace the stored gallery.', exact: true });
+  await expect(confirmation).not.toBeChecked();
+  await expect(page.locator('.adm-image-card')).toHaveCount(1);
+  await page.getByRole('textbox', { name: 'Product title', exact: true }).fill('Only the title changes');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).first().click();
+  await expect.poll(() => state.requests.filter(request => request.method === 'PATCH').length).toBe(1);
+  await expect(page.getByText('Changes saved.', { exact: true })).toBeVisible();
+  expect(state.requests.find(request => request.method === 'PATCH')?.body).toEqual({ title: 'Only the title changes' });
+  await page.getByLabel('Or add an existing image', { exact: true }).fill('/editorial/new-safe-image.jpg');
+  await page.getByRole('button', { name: 'Add image', exact: true }).click();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).first().click();
+  await expect(page.getByText('Review and confirm replacement of the stored gallery before saving image changes.', { exact: true })).toBeVisible();
+  expect(state.requests.filter(request => request.method === 'PATCH')).toHaveLength(1);
+  await confirmation.check();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).first().click();
+  await expect.poll(() => state.requests.filter(request => request.method === 'PATCH').length).toBe(2);
+  await expect(confirmation).toHaveCount(0);
+  expect(state.requests.filter(request => request.method === 'PATCH')[1].body).toEqual({ images: [retainedImage, '/editorial/new-safe-image.jpg'] });
+  await page.goto(`/admin/products/${emptyId}/edit`);
+  await expect(page.locator('.adm-image-card')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save changes', exact: true }).first()).toBeDisabled();
+  await confirmation.check();
+  await expect(page.getByRole('button', { name: 'Save changes', exact: true }).first()).toBeEnabled();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).first().click();
+  await expect.poll(() => state.requests.filter(request => request.method === 'PATCH').length).toBe(3);
+  expect(state.requests.filter(request => request.method === 'PATCH')[2].body).toEqual({ images: [] });
 });

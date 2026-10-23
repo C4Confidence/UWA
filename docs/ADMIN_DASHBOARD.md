@@ -69,6 +69,23 @@ Verify one matched/modified record, then sign in again at port 3002. No administ
 
 Older missing category/brand values are labeled for display. The editor leaves their inputs empty and patches only changed fields, so an unrelated title/stock change does not persist invented labels. Product IDs, sold counts, ratings and other unmanaged fields are retained. New products must supply the existing model's required title, slug, description, price, brand, category, color and quantity. Prices are numeric in the existing store currency; no conversion occurs.
 
+### Reviewing incomplete legacy records
+
+The original admin reader required every row to have a string `_id`/title, a finite numeric price and an integer quantity. `products.map(normalizeAdminProduct)` propagated one failed row as a whole-page error. An overview requesting only five recent products could still display database totals while the twelve-row Products page failed. Representative regression fixtures reproduce the failure with null/missing quantities, null titles/prices and `id` aliases; they are not a diagnosis of any particular private laptop record. Missing category/brand alone was already tolerated.
+
+The admin read model now separates incomplete stored data from strictly validated write payloads:
+
+- Products with a usable MongoDB ID remain visible and editable. A valid `id` alias is accepted when `_id` is absent; an invalid authoritative `_id` is never replaced with another identity.
+- Rows show **Needs attention** and the affected fields. Untitled records show their original ID. The editor shows the stored value/type alongside the field. Invalid price/stock displays as **Unavailable**, with a blank repair input; it is never coerced from text, clamped, or replaced with zero.
+- Each save includes only explicitly changed fields. An unrelated edit preserves incomplete fields and stored images. Entering a legitimate zero explicitly sends zero. New records and changed values still pass strict frontend and existing backend validation; there are no automatic repairs or database migrations.
+- Unsafe image references are not previewed. Replacing a damaged gallery requires explicit confirmation, including when removing all unsupported entries. Compatible existing image objects retain their metadata.
+- Non-product records, unusable IDs and duplicate wire identities are reported with their API result positions instead of hiding other products. No unsafe edit links are created. Server totals and pagination remain intact, including a page with no editable rows; use the next page or inspect the reported records separately.
+- Stock summaries remain API-reported, rather than being recalculated from one page. Invalid total-unit values show unavailable and a warning. Detail/update responses for a different product ID are rejected.
+
+No backend application code, model schema or existing records changed for this compatibility fix. The API regressions use twelve raw legacy fixtures in a freshly generated test database, compare stored values before/after reads and partial edits, and verify that invalid writes are still rejected. Frontend tests cover mixed records, diagnostics, repair forms, gallery confirmation, and navigation past unusable pages.
+
+Compatibility-fix validation passed: backend syntax, TypeScript, zero-warning ESLint, production build, **21 isolated API tests**, **48 admin normalization executions**, **31 admin browser executions**, and **139 existing storefront/normalization executions**. Two mobile-only scenarios intentionally skip the desktop project. Browser requests are intercepted; database mutation tests use only their own generated test database. Pull this feature branch and restart/rebuild the frontend to test the fix; no database migration or backend application update is required.
+
 ## Images and persistence
 
 Choose JPEG, PNG or WebP files, inspect local previews, and explicitly upload before saving a product. Limits are eight files per request, 5 MiB per file, 40 megapixels and 12,000 pixels per side. The API checks declared type and signature, fully decodes and re-encodes static images to metadata-free WebP, scales to at most 2048 pixels, and chooses random filenames. SVG, animations, corrupt images and mismatched types are rejected. At most two upload requests per API process are processed concurrently.
@@ -137,6 +154,6 @@ These screenshots use clearly named **Test Preview** records in a disposable tes
 - [Product editor and uploaded image](screenshots/editor-desktop.png)
 - [Mobile inventory](screenshots/inventory-mobile.png)
 
-Validation completed: backend syntax, TypeScript, zero-warning ESLint and the production build passed. The isolated API suite passed all 18 tests. Frontend checks passed 139 storefront/normalization executions and 23 admin executions; the two mobile-only scenarios intentionally skip their desktop project. An existing storefront test now waits for detail navigation before checking its metadata, avoiding a catalog/detail locator race. Repeated browser testing also caught and fixed an initial search timer that could reset a quick page change.
+Initial dashboard validation (before the legacy compatibility fix above): backend syntax, TypeScript, zero-warning ESLint and the production build passed. The isolated API suite passed all 18 tests. Frontend checks passed 139 storefront/normalization executions and 23 admin executions; the two mobile-only scenarios intentionally skip their desktop project. An existing storefront test now waits for detail navigation before checking its metadata, avoiding a catalog/detail locator race. Repeated browser testing also caught and fixed an initial search timer that could reset a quick page change.
 
 A separate real browser/API run verified login and database role lookup, real image upload and decoding through Next.js, product creation, storefront/bag visibility, product editing, mobile stock updates reflected in the storefront, confirmed deletion, regular-user denial and authorization revocation after a database role change. No runtime JavaScript errors or page overflow were observed. A public hosted preview is not deployed; use the isolated Ubuntu workflow above to review interactively.

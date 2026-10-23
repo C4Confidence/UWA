@@ -1,12 +1,28 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { AlertCircle, Image as ImageIcon, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import type { AdminCatalog, AdminProduct } from '@/lib/admin-api';
 
-export const formatCount = (number: number) => new Intl.NumberFormat('en').format(number);
+export const formatCount = (number: number | null) => number === null ? 'Unavailable' : new Intl.NumberFormat('en').format(number);
+export const productDisplayTitle = (product: AdminProduct) => product.title.trim() ? product.title : 'Untitled product';
 
-export function StockBadge({ quantity }: { quantity: number }) {
+export function StockBadge({ quantity }: { quantity: number | null }) {
+  if (quantity === null) return <span className="adm-stock-badge is-unavailable">Stock unavailable</span>;
   return <span className={`adm-stock-badge ${quantity === 0 ? 'is-out' : quantity <= 5 ? 'is-low' : 'is-in'}`}><span />{quantity === 0 ? 'Out of stock' : quantity <= 5 ? 'Low stock' : 'In stock'}</span>;
+}
+
+export function ProductAttention({ product, linked = true }: { product: AdminProduct; linked?: boolean }) {
+  if (!product.issues.length) return null;
+  const content = <>Needs attention: {product.issues.map(issue => issue.field).join(', ')} <span>· Review &amp; repair</span></>;
+  return linked ? <Link className="adm-record-attention" href={`/admin/products/${product._id}/edit`}>{content}</Link> : <span className="adm-record-attention">{content}</span>;
+}
+
+export function CatalogDataWarnings({ data }: { data: AdminCatalog }) {
+  const hasLegacyIssues = data.products.some(product => product.issues.length > 0);
+  if (!data.unavailableProducts.length && !data.summaryIssues.length && !hasLegacyIssues) return null;
+  return <div className="adm-notice adm-notice-warning adm-data-warning" role="status"><AlertCircle size={18} aria-hidden="true" /><div><strong>Some catalog records need review.</strong><p>{data.unavailableProducts.length ? 'Available product records remain editable. Records without usable IDs are listed below.' : hasLegacyIssues ? 'Products marked “Needs attention” can be reviewed and repaired individually.' : 'Some catalog totals are unavailable while stock data needs review.'}</p>{hasLegacyIssues && <p>Totals are reported by the API and may include incomplete legacy values.</p>}{(data.unavailableProducts.length > 0 || data.summaryIssues.length > 0) && <ul>{data.unavailableProducts.map(item => <li key={item.position}>Record {item.position}: {item.reason}</li>)}{data.summaryIssues.map(issue => <li key={issue}>{issue}</li>)}</ul>}</div></div>;
 }
 
 export function AdminThumbnail({ src, title }: { src?: string; title: string }) {

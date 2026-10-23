@@ -275,6 +275,21 @@ a.adm-stat-card:hover{transform:translateY(-3px);border-color:#bfc5ae}
 .adm-image-path-row .adm-button{font-size:10px;padding:11px;min-height:42px}
 .adm-image-path-field .adm-field-help{font-size:9px;line-height:1.8}
 .adm-image-path-field+.adm-notice{margin:20px 0 0;font-size:10px}
+.adm-record-attention,.adm-recent-copy>.adm-record-attention{display:block;margin-top:7px;color:#856517;font-size:9px;line-height:1.6;white-space:normal;max-width:270px}
+a.adm-record-attention:hover{text-decoration:underline;text-underline-offset:3px}
+.adm-record-attention>span{white-space:nowrap;font-weight:600}
+.adm-product-id,.adm-recent-copy>.adm-product-id{display:block;font-size:9px;color:#69755b;overflow-wrap:anywhere;margin-top:5px;line-height:1.5}
+.adm-value-unavailable{color:#856517;font-size:11px}
+.adm-stock-badge.is-unavailable{background:#f5f0e3;color:#82662c}
+.adm-data-warning ul{list-style:disc;margin:8px 0 0;padding-left:16px}
+.adm-data-warning li+li{margin-top:5px}
+.adm-stored-issue{margin-top:8px;padding:9px 11px;border:1px solid #e8dfbc;border-radius:5px;background:#fbf7e9;color:#7c682f;font-size:10px;line-height:1.7;overflow-wrap:anywhere}
+.adm-stored-issue code{display:block;margin-top:3px;font-family:var(--font-sans);color:#746337}
+.adm-gallery-review{display:flex;align-items:flex-start;gap:10px;font-size:11px;line-height:1.7;color:#7f672c;background:#fbf7e9;border:1px solid #e8dfbc;padding:15px;border-radius:7px}
+.adm-gallery-review input{width:16px;height:16px;margin:3px 0 0;flex-shrink:0;accent-color:#8b7425}
+.adm-record-id{font-size:10px;color:#6f775f;margin:-13px 0 23px;overflow-wrap:anywhere}
+.adm-record-id code{font-size:10px;font-family:var(--font-sans)}
+.adm-stock-unavailable{color:#82662c}
 .adm-visually-hidden{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 /* Small supporting text stays legible against the neutral panels. */
 .adm-page-eyebrow,.adm-sidebar-section,.adm-topbar-label,.adm-admin-identity small,.adm-workspace-footer,.adm-stat-top,.adm-stat-bottom,.adm-recent-copy>span,.adm-units-total>span,.adm-health-legend,.adm-catalog-footnote,.adm-product-slug,.adm-table-secondary,.adm-pagination>div,.adm-pagination>.adm-muted,.adm-back-link,.adm-field-help,.adm-field-meta>span,.adm-editor-tip .adm-muted,.adm-image-source,.adm-images-empty .adm-muted,.adm-upload-zone .adm-muted,.adm-section-line .adm-muted{color:#6a755c}

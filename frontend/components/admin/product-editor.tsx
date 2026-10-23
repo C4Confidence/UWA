@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ArrowLeft, ArrowUpRight, Check, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, Package, RotateCcw, Save } from "lucide-react";
-import { AdminApiError, getAdminProduct, saveAdminProduct, validImageReference, type AdminImageEntry, type AdminProduct, type ProductInput } from "@/lib/admin-api";
+import { AdminApiError, getAdminProduct, saveAdminProduct, validImageReference, type AdminImageEntry, type AdminProduct, type AdminProductIssue, type ProductInput } from "@/lib/admin-api";
 import { money } from "@/lib/api";
 import { useAdmin } from "./admin-shell";
 import { ImageManager } from "./image-manager";
@@ -24,7 +24,7 @@ const emptyForm: FormValues = { title: "", slug: "", description: "", price: "",
 const textFields = ["title", "slug", "description", "category", "brand", "color"] as const;
 
 function formFor(product: AdminProduct): FormValues {
-  return { title: product.title, slug: product.slug, description: product.description, price: String(product.price), category: product.category, brand: product.brand, color: product.color || "", quantity: String(product.quantity), images: [...product.images] };
+  return { title: product.title, slug: product.slug, description: product.description, price: product.price === null ? "" : String(product.price), category: product.category, brand: product.brand, color: product.color || "", quantity: product.quantity === null ? "" : String(product.quantity), images: [...product.images] };
 }
 
 function draftSlug(value: string): string {
@@ -36,8 +36,8 @@ function buildInput(form: FormValues, original: FormValues | null): Partial<Prod
   for (const key of textFields) {
     if (!original || form[key] !== original[key]) input[key] = form[key].trim();
   }
-  if (!original || Number(form.price) !== Number(original.price)) input.price = Number(form.price);
-  if (!original || Number(form.quantity) !== Number(original.quantity)) input.quantity = Number(form.quantity);
+  if (!original || form.price !== original.price) input.price = form.price.trim() ? Number(form.price) : NaN;
+  if (!original || form.quantity !== original.quantity) input.quantity = form.quantity.trim() ? Number(form.quantity) : NaN;
   if (!original || JSON.stringify(form.images) !== JSON.stringify(original.images)) input.images = [...form.images];
   return input;
 }
@@ -48,6 +48,8 @@ export function ProductEditor({ productId }: { productId?: string }) {
   const [form, setForm] = useState<FormValues>(emptyForm);
   const [original, setOriginal] = useState<FormValues | null>(null);
   const [originalImageEntries, setOriginalImageEntries] = useState<AdminImageEntry[]>([]);
+  const [issues, setIssues] = useState<AdminProductIssue[]>([]);
+  const [galleryReplacementReviewed, setGalleryReplacementReviewed] = useState(false);
   const [loading, setLoading] = useState(editing);
   const [loadError, setLoadError] = useState("");
   const [error, setError] = useState("");
@@ -74,6 +76,8 @@ export function ProductEditor({ productId }: { productId?: string }) {
       setForm(values);
       setOriginal(values);
       setOriginalImageEntries([...product.imageEntries]);
+      setIssues(product.issues);
+      setGalleryReplacementReviewed(false);
       setFieldErrors({});
       setSaved(false);
     }).catch((cause: unknown) => {
@@ -83,12 +87,18 @@ export function ProductEditor({ productId }: { productId?: string }) {
     return () => { active = false; controller.abort(); };
   }, [productId, token, retry, handleError]);
 
-  const input = useMemo(() => buildInput(form, original), [form, original]);
+  const galleryNeedsReview = issues.some(issue => issue.field === "images");
+  const input = useMemo(() => {
+    const payload = buildInput(form, original);
+    if (galleryNeedsReview && galleryReplacementReviewed) payload.images = [...form.images];
+    return payload;
+  }, [form, original, galleryNeedsReview, galleryReplacementReviewed]);
   const changed = !editing || Object.keys(input).length > 0;
   const setImages = useCallback((images: string[]) => {
     setForm((current) => ({ ...current, images }));
     setFieldErrors((current) => { const next = { ...current }; delete next.images; return next; });
     setSaved(false);
+    setGalleryReplacementReviewed(false);
   }, []);
   const disabled = saving || uploading;
 
@@ -101,11 +111,16 @@ export function ProductEditor({ productId }: { productId?: string }) {
   function validate(): Record<string, string> {
     const errors: Record<string, string> = {};
     for (const key of textFields) {
-      if ((!editing || form[key] !== original?.[key]) && !form[key].trim()) errors[key] = `Please enter ${key === "description" ? "a description" : key === "title" ? "a product title" : `a ${key}`}.`;
+      if (!editing || form[key] !== original?.[key]) {
+        const maximum = key === "description" ? 20000 : key === "title" || key === "slug" ? 200 : 120;
+        if (!form[key].trim()) errors[key] = `Please enter ${key === "description" ? "a description" : key === "title" ? "a product title" : `a ${key}`}.`;
+        else if (form[key].trim().length > maximum) errors[key] = `Use no more than ${maximum.toLocaleString()} characters.`;
+      }
     }
-    if (!form.price.trim() || !Number.isFinite(Number(form.price)) || Number(form.price) < 0 || Number(form.price) > Number.MAX_SAFE_INTEGER) errors.price = "Enter a valid price of zero or more.";
-    if (!form.quantity.trim() || !Number.isSafeInteger(Number(form.quantity)) || Number(form.quantity) < 0) errors.quantity = "Enter a whole stock quantity of zero or more.";
+    if ((!editing || form.price !== original?.price) && (!form.price.trim() || !Number.isFinite(Number(form.price)) || Number(form.price) < 0 || Number(form.price) > Number.MAX_SAFE_INTEGER)) errors.price = "Enter a valid price of zero or more.";
+    if ((!editing || form.quantity !== original?.quantity) && (!form.quantity.trim() || !Number.isSafeInteger(Number(form.quantity)) || Number(form.quantity) < 0)) errors.quantity = "Enter a whole stock quantity of zero or more.";
     if (input.images && (input.images.length > 32 || !input.images.every(validImageReference))) errors.images = "Use up to 32 supported local image paths or HTTPS URLs.";
+    if (input.images && galleryNeedsReview && !galleryReplacementReviewed) errors.images = "Review and confirm replacement of the stored gallery before saving image changes.";
     return errors;
   }
 
@@ -128,6 +143,8 @@ export function ProductEditor({ productId }: { productId?: string }) {
     try {
       const product = await saveAdminProduct(input, token, productId, originalImageEntries);
       setOriginalImageEntries([...product.imageEntries]);
+      setIssues(product.issues);
+      setGalleryReplacementReviewed(false);
       refreshCatalog();
       notify(editing ? "Product changes saved to the catalog." : "Product created in the catalog.");
       if (!editing) setCreated(product);
@@ -149,8 +166,12 @@ export function ProductEditor({ productId }: { productId?: string }) {
     }
   }
 
-  const help = (key: string) => fieldErrors[key] ? <p className="adm-field-error" id={`${key}-error`}>{fieldErrors[key]}</p> : null;
-  const legacyMissing = editing && original && ["brand", "category", "color"].filter((key) => !original[key as keyof FormValues]);
+  const help = (key: string) => {
+    const issue = issues.find(entry => entry.field === key);
+    return <>{fieldErrors[key] && <p className="adm-field-error" id={`${key}-error`}>{fieldErrors[key]}</p>}{issue && <div className="adm-stored-issue" id={`${key}-stored-issue`}><p>{issue.message}</p><p><strong>Stored value:</strong> <code>{issue.storedValue}</code></p></div>}</>;
+  };
+  const describedBy = (key: string, base?: string) => [fieldErrors[key] ? `${key}-error` : "", issues.some(issue => issue.field === key) ? `${key}-stored-issue` : "", base || ""].filter(Boolean).join(" ") || undefined;
+  const stockQuantity = form.quantity.trim() && Number.isSafeInteger(Number(form.quantity)) && Number(form.quantity) >= 0 ? Number(form.quantity) : null;
 
   if (loading) return <div className="adm-editor-loading" role="status"><LoaderCircle size={28} className="spin" aria-hidden="true" /><h2>Getting the details ready.</h2><p className="adm-muted">Loading this product from your catalog.</p></div>;
   if (loadError) return <div className="adm-panel adm-error-state" role="alert"><Package size={36} strokeWidth={1.4} aria-hidden="true" /><h1>We couldn’t open this product.</h1><p className="adm-muted">{loadError}</p><div className="adm-inline-actions"><button type="button" className="adm-button adm-button-primary" onClick={() => setRetry((value) => value + 1)}><RotateCcw size={16} aria-hidden="true" />Try again</button><Link href="/admin/products" className="adm-button adm-button-secondary">Back to products</Link></div></div>;
@@ -162,40 +183,42 @@ export function ProductEditor({ productId }: { productId?: string }) {
         <div><Link href="/admin/products" className="adm-back-link"><ArrowLeft size={15} aria-hidden="true" />All products</Link><p className="adm-page-eyebrow">{editing ? "Refine the details" : "Make room for something good"}</p><h1>{editing ? "Edit product" : "Add a product"}<span className="adm-heading-dot">.</span></h1><p className="adm-muted">{editing ? "A thoughtful update. A better shopping experience." : "Bring a new favourite to your UWA collection."}</p></div>
         {editing && <Link href={`/products/${productId}`} className="adm-button adm-button-secondary">View storefront<ArrowUpRight size={16} aria-hidden="true" /></Link>}
       </div>
-      {legacyMissing && legacyMissing.length > 0 && <div className="adm-notice adm-notice-warning"><CircleHelp size={18} aria-hidden="true" /><div><strong>A little catalog housekeeping</strong><p>This older record has no {legacyMissing.join(", ")}. You can add those details now, or leave them untouched while saving other changes. We won’t fill them automatically.</p></div></div>}
-      {saved && <div className="adm-notice adm-notice-success" role="status"><CheckCircle2 size={18} aria-hidden="true" /><div><strong>Changes saved.</strong> The storefront will use the updated catalog information.</div></div>}
+      {editing && <p className="adm-record-id">Product ID: <code>{productId}</code></p>}
+      {issues.length > 0 && <div className="adm-notice adm-notice-warning"><CircleHelp size={18} aria-hidden="true" /><div><strong>A little catalog housekeeping</strong><p>This stored record needs review: {[...new Set(issues.map(issue => issue.field))].join(", ")}. Original values appear beside their fields. You can repair selected details or leave them untouched while saving other changes. No fallback values are saved automatically.</p></div></div>}
+      {saved && <div className="adm-notice adm-notice-success" role="status"><CheckCircle2 size={18} aria-hidden="true" /><div><strong>Changes saved.</strong> Your changed fields were saved.{issues.length > 0 && " This record still has stored details to review."}</div></div>}
       <form onSubmit={submit} className="adm-editor-grid" noValidate aria-busy={saving}>
         <div className="adm-editor-main">
           {error && <div className="adm-notice adm-notice-error" role="alert" ref={errorRef} tabIndex={-1}><div><strong>Let’s check that again.</strong><p>{error}</p></div></div>}
           <section className="adm-panel" aria-labelledby="product-details-heading">
             <div className="adm-panel-heading"><div><h2 id="product-details-heading">The essentials</h2><p className="adm-muted">Clear details help good products find their people.</p></div><span className="adm-panel-step">01</span></div>
             <div className="adm-panel-body adm-form-grid">
-              <div className="adm-field"><label htmlFor="title">Product title <span aria-hidden="true">*</span></label><input id="title" name="title" value={form.title} onChange={(event) => setField("title", event.target.value)} placeholder="Give this product a clear, memorable name" maxLength={200} required disabled={disabled} aria-invalid={!!fieldErrors.title} aria-describedby={fieldErrors.title ? "title-error" : undefined} />{help("title")}</div>
-              <div className="adm-field"><label htmlFor="slug">Product slug <span aria-hidden="true">*</span></label><input id="slug" name="slug" value={form.slug} onChange={(event) => { setSlugEdited(true); setField("slug", event.target.value); }} placeholder="your-product-name" maxLength={200} required={!editing} disabled={disabled} autoCapitalize="none" spellCheck={false} aria-invalid={!!fieldErrors.slug} aria-describedby={fieldErrors.slug ? "slug-error" : "slug-help"} /><p className="adm-field-help" id="slug-help">A unique catalog identifier. Use lowercase words separated by hyphens. Existing product links keep their original ID.</p>{help("slug")}</div>
-              <div className="adm-field"><label htmlFor="description">Description <span aria-hidden="true">*</span></label><textarea id="description" name="description" value={form.description} onChange={(event) => setField("description", event.target.value)} rows={7} placeholder="What makes it special? Include useful details, materials and features." maxLength={20000} required={!editing} disabled={disabled} aria-invalid={!!fieldErrors.description} aria-describedby={fieldErrors.description ? "description-error" : "description-help"} /><div className="adm-field-meta"><p className="adm-field-help" id="description-help">Plain text. Keep it helpful, honest and easy to read.</p><span>{form.description.length.toLocaleString()} / 20,000</span></div>{help("description")}</div>
+              <div className="adm-field"><label htmlFor="title">Product title <span aria-hidden="true">*</span></label><input id="title" name="title" value={form.title} onChange={(event) => setField("title", event.target.value)} placeholder="Give this product a clear, memorable name" maxLength={200} required disabled={disabled} aria-invalid={!!fieldErrors.title} aria-describedby={describedBy("title")} />{help("title")}</div>
+              <div className="adm-field"><label htmlFor="slug">Product slug <span aria-hidden="true">*</span></label><input id="slug" name="slug" value={form.slug} onChange={(event) => { setSlugEdited(true); setField("slug", event.target.value); }} placeholder="your-product-name" maxLength={200} required={!editing} disabled={disabled} autoCapitalize="none" spellCheck={false} aria-invalid={!!fieldErrors.slug} aria-describedby={describedBy("slug", "slug-help")} /><p className="adm-field-help" id="slug-help">A unique catalog identifier. Use lowercase words separated by hyphens. Existing product links keep their original ID.</p>{help("slug")}</div>
+              <div className="adm-field"><label htmlFor="description">Description <span aria-hidden="true">*</span></label><textarea id="description" name="description" value={form.description} onChange={(event) => setField("description", event.target.value)} rows={7} placeholder="What makes it special? Include useful details, materials and features." maxLength={20000} required={!editing} disabled={disabled} aria-invalid={!!fieldErrors.description} aria-describedby={describedBy("description", "description-help")} /><div className="adm-field-meta"><p className="adm-field-help" id="description-help">Plain text. Keep it helpful, honest and easy to read.</p><span>{form.description.length.toLocaleString()} / 20,000</span></div>{help("description")}</div>
             </div>
           </section>
           <section className="adm-panel" aria-labelledby="product-attributes-heading">
             <div className="adm-panel-heading"><div><h2 id="product-attributes-heading">Details that define it</h2><p className="adm-muted">Make browsing and discovery feel effortless.</p></div><span className="adm-panel-step">02</span></div>
             <div className="adm-panel-body adm-form-grid">
               <div className="adm-form-row">
-                <div className="adm-field"><label htmlFor="brand">Brand {!editing && <span aria-hidden="true">*</span>}</label><input id="brand" name="brand" value={form.brand} onChange={(event) => setField("brand", event.target.value)} placeholder={editing && !original?.brand ? "Not set — older record" : "e.g. brand name"} maxLength={120} required={!editing} disabled={disabled} aria-invalid={!!fieldErrors.brand} aria-describedby={fieldErrors.brand ? "brand-error" : undefined} />{help("brand")}</div>
-                <div className="adm-field"><label htmlFor="category">Category {!editing && <span aria-hidden="true">*</span>}</label><input id="category" name="category" value={form.category} onChange={(event) => setField("category", event.target.value)} placeholder={editing && !original?.category ? "Not set — older record" : "e.g. Electronics"} maxLength={120} required={!editing} disabled={disabled} aria-invalid={!!fieldErrors.category} aria-describedby={fieldErrors.category ? "category-error" : undefined} />{help("category")}</div>
+                <div className="adm-field"><label htmlFor="brand">Brand {!editing && <span aria-hidden="true">*</span>}</label><input id="brand" name="brand" value={form.brand} onChange={(event) => setField("brand", event.target.value)} placeholder={editing && !original?.brand ? "Not set — older record" : "e.g. brand name"} maxLength={120} required={!editing} disabled={disabled} aria-invalid={!!fieldErrors.brand} aria-describedby={describedBy("brand")} />{help("brand")}</div>
+                <div className="adm-field"><label htmlFor="category">Category {!editing && <span aria-hidden="true">*</span>}</label><input id="category" name="category" value={form.category} onChange={(event) => setField("category", event.target.value)} placeholder={editing && !original?.category ? "Not set — older record" : "e.g. Electronics"} maxLength={120} required={!editing} disabled={disabled} aria-invalid={!!fieldErrors.category} aria-describedby={describedBy("category")} />{help("category")}</div>
               </div>
-              <div className="adm-field"><label htmlFor="color">Color {!editing && <span aria-hidden="true">*</span>}</label><input id="color" name="color" value={form.color} onChange={(event) => setField("color", event.target.value)} placeholder={editing && !original?.color ? "Not set — older record" : "e.g. Black, warm white, or assorted"} maxLength={120} required={!editing} disabled={disabled} aria-invalid={!!fieldErrors.color} aria-describedby={fieldErrors.color ? "color-error" : undefined} />{help("color")}</div>
+              <div className="adm-field"><label htmlFor="color">Color {!editing && <span aria-hidden="true">*</span>}</label><input id="color" name="color" value={form.color} onChange={(event) => setField("color", event.target.value)} placeholder={editing && !original?.color ? "Not set — older record" : "e.g. Black, warm white, or assorted"} maxLength={120} required={!editing} disabled={disabled} aria-invalid={!!fieldErrors.color} aria-describedby={describedBy("color")} />{help("color")}</div>
             </div>
           </section>
           <ImageManager images={form.images} onChange={setImages} disabled={saving} onPendingChange={setPendingImages} onBusyChange={setUploading} />
-          {fieldErrors.images && <p className="adm-notice adm-notice-error" id="images-error" role="alert">{fieldErrors.images}</p>}
+          <div aria-live="polite">{help("images")}</div>
+          {galleryNeedsReview && <div className="adm-gallery-review"><input id="confirm-gallery-replacement" type="checkbox" checked={galleryReplacementReviewed} onChange={event => { setGalleryReplacementReviewed(event.target.checked); setFieldErrors(current => { const next = { ...current }; delete next.images; return next; }); }} disabled={disabled} aria-describedby="gallery-review-help" /><div><label htmlFor="confirm-gallery-replacement">I reviewed the safe image references and want to replace the stored gallery.</label><p className="adm-field-help" id="gallery-review-help">Some original entries cannot be previewed. Saving these gallery changes removes unsupported entries. Unrelated product edits keep the stored gallery untouched.</p></div></div>}
           <div className="adm-editor-bottom"><Link href="/admin/products" className="adm-button adm-button-secondary">Back to products</Link><button type="submit" className="adm-button adm-button-primary" disabled={disabled || pendingImages || !changed}>{saving ? <LoaderCircle size={17} className="spin" aria-hidden="true" /> : <Save size={17} aria-hidden="true" />}{saving ? "Saving product…" : editing ? "Save changes" : "Create product"}</button></div>
         </div>
         <aside className="adm-editor-sidebar" aria-label="Pricing, stock and save controls">
           <section className="adm-panel" aria-labelledby="product-pricing-heading">
             <div className="adm-panel-heading"><div><h2 id="product-pricing-heading">Price & inventory</h2><p className="adm-muted">Ready for the shelf.</p></div></div>
             <div className="adm-panel-body adm-form-grid">
-              <div className="adm-field"><label htmlFor="price">Price <span aria-hidden="true">*</span></label><input id="price" name="price" type="number" inputMode="decimal" min="0" max={Number.MAX_SAFE_INTEGER} step="any" value={form.price} onChange={(event) => setField("price", event.target.value)} placeholder="0.00" required disabled={disabled} aria-invalid={!!fieldErrors.price} aria-describedby={fieldErrors.price ? "price-error" : "price-help"} /><p className="adm-field-help" id="price-help">Store currency: {money(0).replace(/[\d\s.,]/g, "") || "configured store currency"}. Enter the full selling price.</p>{help("price")}</div>
-              <div className="adm-field"><label htmlFor="quantity">Stock quantity <span aria-hidden="true">*</span></label><input id="quantity" name="quantity" type="number" inputMode="numeric" min="0" max={Number.MAX_SAFE_INTEGER} step="1" value={form.quantity} onChange={(event) => setField("quantity", event.target.value)} required disabled={disabled} aria-invalid={!!fieldErrors.quantity} aria-describedby={fieldErrors.quantity ? "quantity-error" : "quantity-help"} /><p className="adm-field-help" id="quantity-help">Use a whole number. Zero marks this product as out of stock.</p>{help("quantity")}</div>
-              <div className={`adm-stock-indicator ${Number(form.quantity) === 0 ? "adm-stock-out" : Number(form.quantity) <= 5 ? "adm-stock-low" : "adm-stock-in"}`}><span aria-hidden="true" />{!form.quantity.trim() || !Number.isSafeInteger(Number(form.quantity)) || Number(form.quantity) < 0 ? "Set stock quantity" : Number(form.quantity) === 0 ? "Out of stock" : Number(form.quantity) <= 5 ? "Low stock" : "In stock"}</div>
+              <div className="adm-field"><label htmlFor="price">Price <span aria-hidden="true">*</span></label><input id="price" name="price" type="number" inputMode="decimal" min="0" max={Number.MAX_SAFE_INTEGER} step="any" value={form.price} onChange={(event) => setField("price", event.target.value)} placeholder="0.00" required disabled={disabled} aria-invalid={!!fieldErrors.price} aria-describedby={describedBy("price", "price-help")} /><p className="adm-field-help" id="price-help">Store currency: {money(0).replace(/[\d\s.,]/g, "") || "configured store currency"}. Enter the full selling price.</p>{help("price")}</div>
+              <div className="adm-field"><label htmlFor="quantity">Stock quantity <span aria-hidden="true">*</span></label><input id="quantity" name="quantity" type="number" inputMode="numeric" min="0" max={Number.MAX_SAFE_INTEGER} step="1" value={form.quantity} onChange={(event) => setField("quantity", event.target.value)} required disabled={disabled} aria-invalid={!!fieldErrors.quantity} aria-describedby={describedBy("quantity", "quantity-help")} /><p className="adm-field-help" id="quantity-help">Use a whole number. Zero marks this product as out of stock.</p>{help("quantity")}</div>
+              <div className={`adm-stock-indicator ${stockQuantity === null ? "adm-stock-unavailable" : stockQuantity === 0 ? "adm-stock-out" : stockQuantity <= 5 ? "adm-stock-low" : "adm-stock-in"}`}><span aria-hidden="true" />{stockQuantity === null ? editing ? "Stock unavailable" : "Set stock quantity" : stockQuantity === 0 ? "Out of stock" : stockQuantity <= 5 ? "Low stock" : "In stock"}</div>
             </div>
           </section>
           <section className="adm-panel adm-save-panel" aria-labelledby="product-save-heading">

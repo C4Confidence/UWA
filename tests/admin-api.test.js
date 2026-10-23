@@ -69,6 +69,45 @@ function product(overrides = {}) {
   };
 }
 
+async function insertMixedLegacyProducts() {
+  assertIsolatedConnection();
+  const variants = [
+    {},
+    { price: 10, quantity: 0 },
+    { category: undefined, brand: undefined, description: undefined },
+    { category: null, brand: ['Legacy', 'Brand'], color: null },
+    { title: undefined },
+    { title: { legacy: 'An object rather than a title' } },
+    { price: null },
+    { price: '19.95' },
+    { price: 'unavailable' },
+    { quantity: null },
+    { quantity: '4' },
+    { quantity: 'unknown', images: '/redmi.jpg' },
+  ];
+  const records = [];
+  for (const [index, fields] of variants.entries()) {
+    const record = {
+      ...product({ title: `Synthetic Mixed Legacy ${index + 1}`, slug: `synthetic-mixed-legacy-${index + 1}` }),
+      _id: new mongoose.Types.ObjectId(), sold: 0, ratings: [],
+      createdAt: new Date('2020-01-01T00:00:00Z'), updatedAt: new Date('2020-01-01T00:00:00Z'),
+      ...fields,
+    };
+    for (const key of Object.keys(record)) if (record[key] === undefined) delete record[key];
+    // Model validation is intentionally bypassed only in this guarded test DB to
+    // represent historical records which can predate the current required fields.
+    await Product.collection.insertOne(record);
+    records.push(record);
+  }
+  return records;
+}
+
+function withoutUpdateTime(record) {
+  const copy = { ...record };
+  delete copy.updatedAt;
+  return copy;
+}
+
 function idOf(value) { return String(value._id || value.id); }
 
 function assertSafeUser(value) {
@@ -305,6 +344,65 @@ describe('secure admin API against a disposable isolated MongoDB database', { co
     for (const field of ['title', 'slug', 'description', 'color', 'sold', 'images', 'ratings']) assert.deepEqual(stored[field], legacy[field]);
     await api('patch', `/api/admin/products/${id}`, adminToken).send({ quantity: -1 }).expect(400);
     assert.equal((await Product.findById(id).lean()).quantity, 4);
+  });
+
+  test('admin reads retain all twelve mixed legacy identities without rewriting original database values', async () => {
+    const records = await insertMixedLegacyProducts();
+    const originals = await Product.collection.find({}).sort({ _id: 1 }).toArray();
+    const listing = await api('get', '/api/admin/products', adminToken).query({ limit: 12, sort: '_id' }).expect(200);
+    assert.equal(listing.body.total, 12);
+    assert.equal(listing.body.products.length, 12);
+    assert.equal(listing.body.totalPages, 1);
+    assert.deepEqual(listing.body.products.map(idOf), originals.map(idOf));
+    const complete = listing.body.products.find(entry => idOf(entry) === String(records[0]._id));
+    assert.equal(complete.title, records[0].title);
+    assert.equal(complete.price, records[0].price);
+    assert.equal(complete.quantity, records[0].quantity);
+    assert.deepEqual(complete.images, records[0].images);
+    for (const index of [4, 5, 8, 11]) {
+      const detail = await api('get', `/api/admin/products/${records[index]._id}`, adminToken).expect(200);
+      assert.equal(idOf(detail.body), String(records[index]._id));
+    }
+    // Mongoose may cast values in the wire response. Compare the raw collection
+    // before/after instead: viewing the catalog must never repair data implicitly.
+    assert.deepEqual(await Product.collection.find({}).sort({ _id: 1 }).toArray(), originals);
+  });
+
+  test('unrelated partial updates preserve malformed legacy titles, prices, stock and image storage', async () => {
+    const records = await insertMixedLegacyProducts();
+    for (const index of [4, 5, 8, 11]) {
+      const original = await Product.collection.findOne({ _id: records[index]._id });
+      const updated = await api('patch', `/api/admin/products/${records[index]._id}`, adminToken).send({ color: 'Updated blue' }).expect(200);
+      assert.equal(idOf(updated.body), String(records[index]._id));
+      assert.equal(updated.body.color, 'Updated blue');
+      const stored = await Product.collection.findOne({ _id: records[index]._id });
+      assert.deepEqual(withoutUpdateTime(stored), { ...withoutUpdateTime(original), color: 'Updated blue' });
+    }
+    assert.equal(await Product.collection.countDocuments(), 12);
+  });
+
+  test('legacy read compatibility keeps strict changed-field and new-product validation', async () => {
+    const records = await insertMixedLegacyProducts();
+    const id = records[11]._id;
+    const original = await Product.collection.findOne({ _id: id });
+    for (const invalid of [
+      { price: -1 }, { price: '9.99' }, { price: null },
+      { quantity: -1 }, { quantity: 1.5 }, { quantity: '4' }, { quantity: null },
+      { title: '' }, { title: { invalid: true } }, { category: '' }, { brand: null },
+      { description: '' }, { color: [] }, { slug: '' }, { images: 'not-an-array' },
+    ]) {
+      await api('patch', `/api/admin/products/${id}`, adminToken).send(invalid).expect(400);
+      assert.deepEqual(await Product.collection.findOne({ _id: id }), original);
+    }
+    for (const invalid of [{ title: null }, { description: null }, { category: null }, { brand: [] }, { color: '' }, { price: null }, { quantity: null }]) {
+      await api('post', '/api/admin/products', adminToken).send(product(invalid)).expect(400);
+    }
+    await api('patch', `/api/admin/products/${id}`, adminToken).send({ title: 'Explicitly Repaired Synthetic Product', price: 55, quantity: 7 }).expect(200);
+    const repaired = await Product.collection.findOne({ _id: id });
+    assert.deepEqual(withoutUpdateTime(repaired), {
+      ...withoutUpdateTime(original), title: 'Explicitly Repaired Synthetic Product', price: 55, quantity: 7,
+    });
+    assert.equal(await Product.collection.countDocuments(), 12);
   });
 
   test('admin catalog supports search, stock filters, sorting, pagination and truthful inventory summaries', async () => {

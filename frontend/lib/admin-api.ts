@@ -20,8 +20,18 @@ export interface ProductInput {
 
 export type AdminImageEntry = string | { url: string; [key: string]: unknown };
 
-export interface AdminProduct extends ProductInput {
+export interface AdminProductIssue {
+  field: keyof ProductInput;
+  message: string;
+  storedValue: string;
+}
+
+// Reads must describe legacy records without making them valid write payloads.
+export interface AdminProduct extends Omit<ProductInput, 'price' | 'quantity'> {
   _id: string;
+  price: number | null;
+  quantity: number | null;
+  issues: AdminProductIssue[];
   imageEntries: AdminImageEntry[];
   createdAt?: string;
   updatedAt?: string;
@@ -32,7 +42,7 @@ export interface CatalogSummary {
   inStock: number;
   lowStock: number;
   outOfStock: number;
-  totalUnits: number;
+  totalUnits: number | null;
 }
 
 export interface AdminCatalog {
@@ -43,6 +53,8 @@ export interface AdminCatalog {
   totalPages: number;
   summary: CatalogSummary;
   categories: string[];
+  unavailableProducts: { position: number; reason: string }[];
+  summaryIssues: string[];
 }
 
 export class AdminApiError extends Error {
@@ -64,20 +76,60 @@ export function validImageReference(value: string): boolean {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password; } catch { return false; }
 }
 
+function storedValue(value: unknown): string {
+  if (value === undefined) return 'Missing';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return `Text: ${JSON.stringify(value).slice(0, 160)}`;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return Array.isArray(value) ? 'Array value' : 'Object value';
+}
+
+function safeImageMetadata(value: unknown, depth = 0): boolean {
+  if (depth > 4) return false;
+  if (value === null || typeof value === 'boolean') return true;
+  if (typeof value === 'string') return value.length <= 4096;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.length <= 32 && value.every(entry => safeImageMetadata(entry, depth + 1));
+  if (!value || typeof value !== 'object') return false;
+  const entries = Object.entries(value);
+  return entries.length <= 20 && entries.every(([key, entry]) => !key.startsWith('$') && !key.includes('.') && !['__proto__', 'constructor', 'prototype'].includes(key) && safeImageMetadata(entry, depth + 1));
+}
+
 export function normalizeAdminProduct(value: unknown): AdminProduct {
-  if (!value || typeof value !== 'object') throw new AdminApiError('This product’s information is unavailable. Please try again.', 502);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AdminApiError('The record is not a product object.', 502);
   const product = value as Record<string, unknown>;
-  if (typeof product._id !== 'string' || !/^[a-f\d]{24}$/i.test(product._id) || typeof product.title !== 'string' || typeof product.price !== 'number' || !Number.isFinite(product.price) || typeof product.quantity !== 'number' || !Number.isInteger(product.quantity)) {
-    throw new AdminApiError('This product’s information is incomplete. Please try again.', 502);
+  const id = product._id ?? product.id;
+  if (typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id)) {
+    throw new AdminApiError('The record has no valid product ID and cannot be edited safely.', 502);
   }
-  const text = (key: string) => typeof product[key] === 'string' ? product[key] as string : '';
+  const issues: AdminProductIssue[] = [];
+  const issue = (field: keyof ProductInput, message: string) => issues.push({ field, message, storedValue: storedValue(product[field]) });
+  const text = (key: 'title' | 'slug' | 'description' | 'brand' | 'category' | 'color', maximum: number) => {
+    const value = product[key];
+    if (typeof value !== 'string' || !value.trim() || value.trim().length > maximum) issue(key, `Enter ${key} as text between 1 and ${maximum.toLocaleString('en')} characters.`);
+    return typeof value === 'string' ? value : '';
+  };
+  const title = text('title', 200);
+  const slug = text('slug', 200);
+  const description = text('description', 20000);
+  const brand = text('brand', 120);
+  const category = text('category', 120);
+  const color = text('color', 120);
+  const price = typeof product.price === 'number' && Number.isFinite(product.price) && product.price >= 0 && product.price <= Number.MAX_SAFE_INTEGER ? product.price : null;
+  const quantity = typeof product.quantity === 'number' && Number.isSafeInteger(product.quantity) && product.quantity >= 0 ? product.quantity : null;
+  if (price === null) issue('price', 'Enter a finite, non-negative price. The stored value has not been converted.');
+  if (quantity === null) issue('quantity', 'Enter a non-negative whole stock quantity. The stored value has not been converted.');
   const imageEntries: AdminImageEntry[] = (Array.isArray(product.images) ? product.images : []).flatMap((image: unknown): AdminImageEntry[] => {
-    const url = typeof image === 'string' ? image : image && typeof image === 'object' && 'url' in image && typeof image.url === 'string' ? image.url : '';
+    const url = typeof image === 'string' ? image : image && typeof image === 'object' && !Array.isArray(image) && 'url' in image && typeof image.url === 'string' ? image.url : '';
     if (!url || !validImageReference(url)) return [];
+    if (typeof image !== 'string' && (!safeImageMetadata(image) || JSON.stringify(image).length > 8192)) return [];
     return typeof image === 'string' ? [image] : [{ ...(image as Record<string, unknown>), url }];
   });
+  if ((product.images !== undefined && !Array.isArray(product.images)) || (Array.isArray(product.images) && (product.images.length !== imageEntries.length || product.images.length > 32))) {
+    issue('images', 'Some stored image data needs review. Only safe references are previewed; replacing the gallery requires your confirmation.');
+  }
   const images = imageEntries.map(image => typeof image === 'string' ? image : image.url);
-  return { _id: product._id, title: product.title, price: product.price, quantity: product.quantity, slug: text('slug'), description: text('description'), brand: text('brand'), category: text('category'), color: text('color'), images, imageEntries, createdAt: text('createdAt') || undefined, updatedAt: text('updatedAt') || undefined };
+  return { _id: id, title, price, quantity, slug, description, brand, category, color, images, imageEntries, issues, createdAt: typeof product.createdAt === 'string' ? product.createdAt : undefined, updatedAt: typeof product.updatedAt === 'string' ? product.updatedAt : undefined };
 }
 
 export async function adminFetch<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
@@ -126,15 +178,32 @@ export async function adminFetch<T>(path: string, token: string, options: Reques
 
 export async function getAdminCatalog(params: URLSearchParams, token: string, signal?: AbortSignal): Promise<AdminCatalog> {
   const data = await adminFetch<Record<string, unknown>>(`/api/admin/products?${params}`, token, { signal });
-  if (!Array.isArray(data.products) || !data.summary || typeof data.summary !== 'object' || !['page', 'limit', 'total', 'totalPages'].every(key => typeof data[key] === 'number' && Number.isFinite(data[key])) || !Array.isArray(data.categories)) throw new AdminApiError('The catalog response is unavailable. Please try again.', 502);
+  if (!data || !Array.isArray(data.products) || !data.summary || typeof data.summary !== 'object' || Array.isArray(data.summary) || !['page', 'limit', 'total', 'totalPages'].every(key => typeof data[key] === 'number' && Number.isSafeInteger(data[key]) && (data[key] as number) >= (key === 'page' || key === 'limit' ? 1 : 0)) || !Array.isArray(data.categories)) throw new AdminApiError('The catalog response is unavailable. Please try again.', 502);
   const summary = data.summary as Record<string, unknown>;
-  if (!['totalProducts', 'inStock', 'lowStock', 'outOfStock', 'totalUnits'].every(key => typeof summary[key] === 'number' && Number.isFinite(summary[key]) && (summary[key] as number) >= 0)) throw new AdminApiError('Catalog totals are unavailable. Please try again.', 502);
-  return { products: data.products.map(normalizeAdminProduct), page: data.page as number, limit: data.limit as number, total: data.total as number, totalPages: data.totalPages as number, summary: summary as unknown as CatalogSummary, categories: data.categories.filter((value): value is string => typeof value === 'string' && !!value) };
+  if (!['totalProducts', 'inStock', 'lowStock', 'outOfStock'].every(key => typeof summary[key] === 'number' && Number.isSafeInteger(summary[key]) && (summary[key] as number) >= 0)) throw new AdminApiError('Catalog totals are unavailable. Please try again.', 502);
+  const totalUnits = typeof summary.totalUnits === 'number' && Number.isSafeInteger(summary.totalUnits) && summary.totalUnits >= 0 ? summary.totalUnits : null;
+  const products: AdminProduct[] = [];
+  const unavailableProducts: AdminCatalog['unavailableProducts'] = [];
+  const ids = new Set<string>();
+  data.products.forEach((value: unknown, index: number) => {
+    try {
+      const product = normalizeAdminProduct(value);
+      if (ids.has(product._id.toLowerCase())) throw new AdminApiError('The API returned a duplicate product ID; this row cannot be edited safely.', 502);
+      ids.add(product._id.toLowerCase());
+      products.push(product);
+    } catch (error) {
+      if (!(error instanceof AdminApiError)) throw error;
+      unavailableProducts.push({ position: ((data.page as number) - 1) * (data.limit as number) + index + 1, reason: error.message });
+    }
+  });
+  return { products, unavailableProducts, summaryIssues: totalUnits === null ? ['The API reported an invalid total unit count. It is unavailable until the stored stock data is reviewed.'] : [], page: data.page as number, limit: data.limit as number, total: data.total as number, totalPages: data.totalPages as number, summary: { totalProducts: summary.totalProducts as number, inStock: summary.inStock as number, lowStock: summary.lowStock as number, outOfStock: summary.outOfStock as number, totalUnits }, categories: data.categories.filter((value): value is string => typeof value === 'string' && !!value.trim()) };
 }
 
 export async function getAdminProduct(id: string, token: string, signal?: AbortSignal): Promise<AdminProduct> {
   if (!/^[a-f\d]{24}$/i.test(id)) throw new AdminApiError('This product could not be found.', 404);
-  return normalizeAdminProduct(await adminFetch<unknown>(`/api/admin/products/${id}`, token, { signal }));
+  const product = normalizeAdminProduct(await adminFetch<unknown>(`/api/admin/products/${id}`, token, { signal }));
+  if (product._id.toLowerCase() !== id.toLowerCase()) throw new AdminApiError('The response identifies a different product. Reload before making changes.', 502);
+  return product;
 }
 
 export async function saveAdminProduct(input: Partial<ProductInput>, token: string, id?: string, originalImageEntries: readonly AdminImageEntry[] = []): Promise<AdminProduct> {
@@ -146,7 +215,9 @@ export async function saveAdminProduct(input: Partial<ProductInput>, token: stri
       return match >= 0 ? remaining.splice(match, 1)[0] : url;
     });
   }
-  return normalizeAdminProduct(await adminFetch<unknown>(id ? `/api/admin/products/${id}` : '/api/admin/products', token, { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) }));
+  const product = normalizeAdminProduct(await adminFetch<unknown>(id ? `/api/admin/products/${id}` : '/api/admin/products', token, { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) }));
+  if (id && product._id.toLowerCase() !== id.toLowerCase()) throw new AdminApiError('The response identifies a different product. Reload before making changes.', 502);
+  return product;
 }
 
 export async function uploadAdminImages(files: File[], token: string): Promise<string[]> {
